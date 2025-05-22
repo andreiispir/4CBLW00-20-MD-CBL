@@ -120,3 +120,46 @@ plt.legend()
 plt.grid(True)
 plt.tight_layout()
 plt.show()
+
+# Plot 3 - Forecast
+
+# Step 1: Get the last date and index
+last_date = df_burglary_grouped['Date'].max()
+last_time_index = df_burglary_grouped['TimeIndex'].max()
+
+# Step 2: Create 24 months of future data
+future_dates = pd.date_range(start=last_date + pd.offsets.MonthBegin(1), periods=24, freq='MS')
+future_df = pd.DataFrame({'Date': future_dates})
+
+# Step 3: Extract features
+future_df['Year'] = future_df['Date'].dt.year
+future_df['Month'] = future_df['Date'].dt.month
+future_df['TimeIndex'] = np.arange(last_time_index + 1, last_time_index + 25)
+future_df['Month_sin'] = np.sin(2 * np.pi * future_df['Month'] / 12)
+future_df['Month_cos'] = np.cos(2 * np.pi * future_df['Month'] / 12)
+
+# Step 4: Define feature columns and predict
+future_X = future_df[['Year', 'Month', 'TimeIndex', 'Month_sin', 'Month_cos']]
+future_df['Predicted'] = model.predict(future_X)
+
+# Step 5: Combine with original results for plotting
+forecast_df = pd.DataFrame({
+    'Date': future_df['Date'],
+    'Actual': np.nan,
+    'Predicted': future_df['Predicted']
+})
+
+full_df = pd.concat([results_df, forecast_df]).sort_values('Date').reset_index(drop=True)
+
+# Step 6: Plot full forecast
+plt.figure(figsize=(14, 6))
+plt.plot(full_df['Date'], full_df['Predicted'], label='Predicted', linestyle='--', marker='x')
+plt.plot(results_df['Date'], results_df['Actual'], label='Actual', linestyle='-', marker='o')
+plt.axvline(x=last_date, color='gray', linestyle='dashed', label='Forecast Start')
+plt.title('Actual and Forecasted Burglary Counts (Next 24 Months)')
+plt.xlabel('Date')
+plt.ylabel('Burglary Count')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
