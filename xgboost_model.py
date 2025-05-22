@@ -10,7 +10,7 @@ import numpy as np
 csv_path = 'london_data.csv'
 df_london = pd.read_csv(csv_path)
 
-# Convert 'Month' to datetime and extract features
+# Convert 'Month' to datetime
 df_london['Month'] = pd.to_datetime(df_london['Month'])
 df_london['Year'] = df_london['Month'].dt.year
 df_london['Month'] = df_london['Month'].dt.month
@@ -18,35 +18,41 @@ df_london['Month'] = df_london['Month'].dt.month
 # Filter for burglary crimes
 df_burglary = df_london[df_london['Crime type'] == 'Burglary']
 
-# Group by year and month, and count number of burglaries
+# Group by year and month
 df_burglary_grouped = df_burglary.groupby(['Year', 'Month']).size().reset_index(name='Count')
 
-# Define features and target
-X = df_burglary_grouped[['Year', 'Month']].copy()
-y = df_burglary_grouped['Count'].copy()
-
 # Combine Year and Month into datetime
-X['Date'] = pd.to_datetime(X['Year'].astype(str) + '-' + X['Month'].astype(str).str.zfill(2))
+df_burglary_grouped['Date'] = pd.to_datetime(
+    df_burglary_grouped['Year'].astype(str) + '-' + df_burglary_grouped['Month'].astype(str).str.zfill(2)
+    ) + pd.offsets.MonthBegin(0)
 
-# Sort by Date (important for TimeSeriesSplit)
-X = X.sort_values('Date')
-y = y.loc[X.index].reset_index(drop=True)
-X = X.reset_index(drop=True)
+# Sort by Date
+df_burglary_grouped = df_burglary_grouped.sort_values('Date').reset_index(drop=True)
 
-# Drop 'Date' from features before training
-X_features = X[['Year', 'Month']]
+# Add TimeIndex
+df_burglary_grouped['TimeIndex'] = np.arange(len(df_burglary_grouped))
 
-# Use TimeSeriesSplit for time-aware cross-validation
+# Add cyclical month features
+df_burglary_grouped['Month_sin'] = np.sin(2 * np.pi * df_burglary_grouped['Month'] / 12)
+df_burglary_grouped['Month_cos'] = np.cos(2 * np.pi * df_burglary_grouped['Month'] / 12)
+
+# Define features and target
+features = ['Year', 'Month', 'TimeIndex', 'Month_sin', 'Month_cos']
+X = df_burglary_grouped[features]
+y = df_burglary_grouped['Count']
+dates = df_burglary_grouped['Date']
+
+# TimeSeriesSplit cross-validation
 tscv = TimeSeriesSplit(n_splits=5)
 
 all_actuals = []
 all_predictions = []
 all_dates = []
 
-for train_index, test_index in tscv.split(X_features):
-    X_train, X_test = X_features.iloc[train_index], X_features.iloc[test_index]
+for train_index, test_index in tscv.split(X):
+    X_train, X_test = X.iloc[train_index], X.iloc[test_index]
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
-    dates_test = X.iloc[test_index]['Date']
+    dates_test = dates.iloc[test_index]
 
     model = XGBRegressor(
         objective='reg:squarederror',
@@ -62,32 +68,38 @@ for train_index, test_index in tscv.split(X_features):
     all_predictions.extend(y_pred)
     all_dates.extend(dates_test)
 
-# Convert results to DataFrame
+# Combine results
 results_df = pd.DataFrame({
     'Date': all_dates,
     'Actual': all_actuals,
     'Predicted': all_predictions
 }).sort_values('Date').reset_index(drop=True)
 
-# Evaluate performance
+# Evaluation
 mse = mean_squared_error(results_df['Actual'], results_df['Predicted'])
 mae = mean_absolute_error(results_df['Actual'], results_df['Predicted'])
-
 print(f'Mean Squared Error (MSE): {mse:.2f}')
 print(f'Mean Absolute Error (MAE): {mae:.2f}')
 
-# Plot 1: Interactive actual vs predicted scatter
-
+# Plot 1: Scatter plot
 fig = px.scatter(
     results_df,
     x='Actual',
     y='Predicted',
-    hover_data=['Date'],
-    title='Cross-Validated: Actual vs Predicted Burglary Counts',
+    custom_data=[results_df['Date'].dt.strftime('%Y-%m')],
+    title='Actual vs Predicted Burglary Counts',
     width=1000,
     height=600
 )
 
+fig.update_traces(
+    marker=dict(size=8, opacity=0.7),
+    hovertemplate=
+        '<b>Actual</b>: %{x}<br>' +
+        '<b>Predicted</b>: %{y}<br>' +
+        '<b>Date</b>: %{customdata[0]}<br>' +
+        '<extra></extra>'
+)
 fig.add_shape(
     type='line',
     line=dict(dash='dash', color='red'),
@@ -95,15 +107,13 @@ fig.add_shape(
     x1=results_df['Actual'].max(), y1=results_df['Actual'].max()
 )
 
-fig.update_traces(marker=dict(size=8, opacity=0.7))
 fig.show()
 
 # Plot 2: Time-based line plot
-
 plt.figure(figsize=(14, 6))
 plt.plot(results_df['Date'], results_df['Actual'], label='Actual', marker='o', linestyle='-')
 plt.plot(results_df['Date'], results_df['Predicted'], label='Predicted', marker='x', linestyle='--')
-plt.title('Cross-Validated: Actual vs Predicted Burglary Counts Over Time')
+plt.title('Actual vs Predicted Burglary Counts Over Time')
 plt.xlabel('Date')
 plt.ylabel('Burglary Count')
 plt.legend()
