@@ -1,0 +1,55 @@
+import pandas as pd
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import os
+from pyproj import datadir
+
+# Step 1: Load the crime data
+file_path = r"C:\Users\HP\Downloads\(Copy) london_crime_with_wards.csv"
+data = pd.read_csv(file_path)
+
+# Step 2: Summarize burglaries by ward
+ward_data = data[data['Crime type'] == 'Burglary'].groupby('NAME')['Crime type'].count().reset_index()
+ward_data.columns = ['WARD', 'BURGLARIES']
+
+# Step 3: Normalize burglaries and assign officers (maximum 100 per ward)
+max_burglaries = ward_data['BURGLARIES'].max()
+ward_data['WEIGHT'] = ward_data['BURGLARIES'] / max_burglaries
+ward_data['OFFICERS'] = (ward_data['WEIGHT'] * 100).round().astype(int)
+ward_data['OFFICERS'] = ward_data['OFFICERS'].clip(upper=100)  # Cap at 100 officers
+
+# Save officer allocation for reference
+output_path = r"C:\Users\HP\Downloads\officer_allocation_proportional.csv"
+ward_data.to_csv(output_path, index=False)
+print(f"Officer allocation saved to {output_path}.")
+
+# Step 4: Load the ward boundaries shapefile
+shapefile_path = r"C:\Users\HP\Downloads\London-wards-2018\London-wards-2018_ESRI\London_Ward.shp"
+wards_gdf = gpd.read_file(shapefile_path)
+
+# Step 5: Merge the allocation data with the geospatial data
+allocation_df = ward_data[['WARD', 'OFFICERS']].rename(columns={'WARD': 'NAME'})
+merged_gdf = wards_gdf.merge(allocation_df, on='NAME', how='left')
+
+
+
+# Step 7: Load forecasting data
+forecast_file_path = r"C:\Users\HP\Downloads\burglaries_forecast_for_ilp.csv"
+forecast_data = pd.read_csv(forecast_file_path)
+forecast_data['ds'] = pd.to_datetime(forecast_data['ds'])
+
+# Step 8: Visualize monthly forecast
+plt.figure(figsize=(12, 6))
+plt.plot(forecast_data['ds'], forecast_data['yhat'], label='Predicted Burglaries', color='blue')
+plt.fill_between(forecast_data['ds'], forecast_data['yhat_lower'], forecast_data['yhat_upper'], color='blue', alpha=0.2, label='Prediction Interval')
+plt.title('Monthly Burglary Forecast')
+plt.xlabel('Month')
+plt.ylabel('Number of Burglaries')
+plt.legend()
+plt.grid()
+plt.show()
+
+# Save the forecast visualization
+forecast_output_path = r"C:\Users\HP\Downloads\burglary_forecast_plot.png"
+plt.savefig(forecast_output_path, dpi=300)
+print(f"Forecast plot saved to {forecast_output_path}.")
