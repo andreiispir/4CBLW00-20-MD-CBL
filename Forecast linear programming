@@ -32,24 +32,29 @@ allocation_df = ward_data[['WARD', 'OFFICERS']].rename(columns={'WARD': 'NAME'})
 merged_gdf = wards_gdf.merge(allocation_df, on='NAME', how='left')
 
 
-
 # Step 7: Load forecasting data
 forecast_file_path = r"C:\Users\HP\Downloads\burglaries_forecast_for_ilp.csv"
 forecast_data = pd.read_csv(forecast_file_path)
 forecast_data['ds'] = pd.to_datetime(forecast_data['ds'])
 
-# Step 8: Visualize monthly forecast
+# Step 8: Visualize monthly forecast with confidence interval
 plt.figure(figsize=(12, 6))
-plt.plot(forecast_data['ds'], forecast_data['yhat'], label='Predicted Burglaries', color='blue')
-plt.fill_between(forecast_data['ds'], forecast_data['yhat_lower'], forecast_data['yhat_upper'], color='blue', alpha=0.2, label='Prediction Interval')
-plt.title('Monthly Burglary Forecast')
-plt.xlabel('Month')
-plt.ylabel('Number of Burglaries')
-plt.legend()
-plt.grid()
+plt.plot(forecast_data['ds'], forecast_data['yhat'], label='Predicted Burglaries', color='blue', linewidth=2)
+plt.fill_between(
+    forecast_data['ds'], 
+    forecast_data['yhat_lower'], 
+    forecast_data['yhat_upper'], 
+    color='blue', alpha=0.2, label='95% Confidence Interval'
+)
+plt.title('Monthly Burglary Forecast with Confidence Interval', fontsize=15)
+plt.xlabel('Month', fontsize=12)
+plt.ylabel('Number of Burglaries', fontsize=12)
+plt.legend(fontsize=10)
+plt.grid(color='gray', linestyle='--', linewidth=0.5)
+plt.tight_layout()
 plt.show()
 
 # Save the forecast visualization
-forecast_output_path = r"C:\Users\HP\Downloads\burglary_forecast_plot.png"
+forecast_output_path = r"C:\Users\HP\Downloads\burglary_forecast_plot_with_confidence_interval.png"
 plt.savefig(forecast_output_path, dpi=300)
-print(f"Forecast plot saved to {forecast_output_path}.")
+print(f"Forecast plot with confidence interval saved to {forecast_output_path}.")
