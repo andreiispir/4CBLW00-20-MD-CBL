@@ -18,6 +18,9 @@ df_london['Month'] = df_london['Month'].dt.month
 # Filter for burglary crimes
 df_burglary = df_london[df_london['Crime type'] == 'Burglary']
 
+# Filter data to only include entries from 2020 onward
+df_burglary = df_burglary[df_burglary['Year'] >= 2020]
+
 # Group by year and month
 df_burglary_grouped = df_burglary.groupby(['Year', 'Month']).size().reset_index(name='Count')
 
@@ -28,6 +31,9 @@ df_burglary_grouped['Date'] = pd.to_datetime(
 
 # Sort by Date
 df_burglary_grouped = df_burglary_grouped.sort_values('Date').reset_index(drop=True)
+
+# Filter to keep only data from 2020 onward
+df_burglary_grouped = df_burglary_grouped[df_burglary_grouped['Date'] >= '2020-01-01'].reset_index(drop=True)
 
 # Add TimeIndex
 df_burglary_grouped['TimeIndex'] = np.arange(len(df_burglary_grouped))
