@@ -127,7 +127,7 @@ plt.grid(True)
 plt.tight_layout()
 plt.show()
 
-# Plot 3 - Forecast
+# Plot 3: Forecast
 
 # Step 1: Get the last date and index
 last_date = df_burglary_grouped['Date'].max()
@@ -166,6 +166,31 @@ plt.title('Actual and Forecasted Burglary Counts (Next 24 Months)')
 plt.xlabel('Date')
 plt.ylabel('Burglary Count')
 plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Plot 4: Residuals over time
+results_df['Residual'] = results_df['Actual'] - results_df['Predicted']
+
+plt.figure(figsize=(14, 5))
+plt.plot(results_df['Date'], results_df['Residual'], marker='o', linestyle='-')
+plt.axhline(0, color='red', linestyle='--')
+plt.title('Residuals Over Time (Actual - Predicted)')
+plt.xlabel('Date')
+plt.ylabel('Residual')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Plot 5: feature importance
+importances = model.feature_importances_
+feature_names = X.columns
+
+plt.figure(figsize=(8, 5))
+plt.barh(feature_names, importances)
+plt.title('Feature Importances (XGBoost)')
+plt.xlabel('Importance')
 plt.grid(True)
 plt.tight_layout()
 plt.show()
