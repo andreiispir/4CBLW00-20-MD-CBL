@@ -6,6 +6,7 @@ from dash.dependencies import Input, Output
 import dash_leaflet as dl
 import dash_leaflet.express as dlx
 import json
+from shapely import wkt
 
 
 # testing logic:
@@ -22,7 +23,6 @@ csv_filename = 'london_crime_with_wards.csv'
 csv_path = os.path.join(current_dir, csv_filename)
 df = pd.read_csv(csv_path)
 
-from shapely import wkt
 
 # Load wards with geometry and quantile
 wards_df = pd.read_csv("wards_for_map.csv")
