@@ -227,7 +227,7 @@ for i, ward in enumerate(wards):
         label=ward,
         method='update',
         args=[{'visible': visibility},
-              {'title': f"📍 Burglary Forecast for {ward}"}]
+              {'title': f"Burglary Forecast for {ward}"}]
     ))
 
 # Update layout with dropdown
@@ -240,7 +240,7 @@ fig.update_layout(
         'y': 1,
         'yanchor': 'top'
     }],
-    title=f"📍 Burglary Forecast for {wards[0]}",
+    title=f"Burglary Forecast for {wards[0]}",
     xaxis_title='Date',
     yaxis_title='Burglary Count',
     width=1000,
