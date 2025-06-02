@@ -6,11 +6,8 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
-import os
 
-# 
-# LOAD AND PREPARE GLOBAL DATA
-# 
+# LOAD AND PREPARE DATA
 
 csv_path = 'london_crime_with_wards.csv'
 df = pd.read_csv(csv_path)
@@ -18,23 +15,18 @@ df['Month'] = pd.to_datetime(df['Month'])
 df['Year'] = df['Month'].dt.year
 df['MonthNum'] = df['Month'].dt.month
 
-# Filter burglary data from 2020+
 df_burglary = df[df['Crime type'] == 'Burglary'].copy()
 df_burglary = df_burglary[df_burglary['Year'] >= 2020]
 
-# Global monthly grouping
 df_global = df_burglary.groupby(['Year', 'MonthNum']).size().reset_index(name='Count')
 df_global['Date'] = pd.to_datetime(df_global['Year'].astype(str) + '-' + df_global['MonthNum'].astype(str)) + pd.offsets.MonthBegin(0)
 df_global = df_global.sort_values('Date').reset_index(drop=True)
 
-# Add TimeIndex and cyclical features
 df_global['TimeIndex'] = np.arange(len(df_global))
 df_global['Month_sin'] = np.sin(2 * np.pi * df_global['MonthNum'] / 12)
 df_global['Month_cos'] = np.cos(2 * np.pi * df_global['MonthNum'] / 12)
 
-# 
-# GLOBAL FORECASTING (XGBoost)
-# 
+# GLOBAL FORECASTING
 
 features = ['Year', 'MonthNum', 'TimeIndex', 'Month_sin', 'Month_cos']
 X = df_global[features]
@@ -57,7 +49,6 @@ for train_idx, test_idx in tscv.split(X):
     all_predictions.extend(y_pred)
     all_dates.extend(dates_test)
 
-# Results
 results_df = pd.DataFrame({'Date': all_dates, 'Actual': all_actuals, 'Predicted': all_predictions}).sort_values('Date')
 
 # Evaluation
@@ -65,28 +56,23 @@ mse = mean_squared_error(results_df['Actual'], results_df['Predicted'])
 mae = mean_absolute_error(results_df['Actual'], results_df['Predicted'])
 print(f'MSE (Global): {mse:.2f}, MAE (Global): {mae:.2f}')
 
-#
-# Plots
-#
+# GLOBAL PLOTS
 
-# Plot 1: Scatter
 fig = px.scatter(results_df, x='Actual', y='Predicted', custom_data=[results_df['Date'].dt.strftime('%Y-%m')],
                  title='Global: Actual vs Predicted Burglary Counts')
-fig.update_traces(marker=dict(size=8, opacity=0.7), hovertemplate='<b>Actual</b>: %{x}<br><b>Predicted</b>: %{y}<br><b>Date</b>: %{customdata[0]}<extra></extra>')
+fig.update_traces(marker=dict(size=8, opacity=0.7),
+                  hovertemplate='<b>Actual</b>: %{x}<br><b>Predicted</b>: %{y}<br><b>Date</b>: %{customdata[0]}<extra></extra>')
 fig.add_shape(type='line', line=dict(dash='dash', color='red'),
               x0=results_df['Actual'].min(), y0=results_df['Actual'].min(),
               x1=results_df['Actual'].max(), y1=results_df['Actual'].max())
 fig.show()
 
-# Plot 2: Time-based line plot
 plt.figure(figsize=(14, 6))
 plt.plot(results_df['Date'], results_df['Actual'], label='Actual', marker='o')
 plt.plot(results_df['Date'], results_df['Predicted'], label='Predicted', marker='x', linestyle='--')
 plt.title('Global: Actual vs Predicted Burglary Counts Over Time')
-plt.xlabel('Date'); plt.ylabel('Burglary Count')
-plt.legend(); plt.grid(True); plt.tight_layout(); plt.show()
+plt.xlabel('Date'); plt.ylabel('Burglary Count'); plt.legend(); plt.grid(True); plt.tight_layout(); plt.show()
 
-# Plot 3: Forecast Next 24 Months
 last_date = df_global['Date'].max()
 last_time_index = df_global['TimeIndex'].max()
 future_dates = pd.date_range(start=last_date + pd.offsets.MonthBegin(1), periods=24, freq='MS')
@@ -108,7 +94,6 @@ plt.axvline(x=last_date, color='gray', linestyle='dashed', label='Forecast Start
 plt.title('Global Forecast: Burglary Counts (Next 24 Months)')
 plt.xlabel('Date'); plt.ylabel('Burglary Count'); plt.legend(); plt.grid(True); plt.tight_layout(); plt.show()
 
-# Plot 4: Residuals
 results_df['Residual'] = results_df['Actual'] - results_df['Predicted']
 plt.figure(figsize=(14, 5))
 plt.plot(results_df['Date'], results_df['Residual'], marker='o')
@@ -116,16 +101,13 @@ plt.axhline(0, color='red', linestyle='--')
 plt.title('Global: Residuals Over Time (Actual - Predicted)')
 plt.xlabel('Date'); plt.ylabel('Residual'); plt.grid(True); plt.tight_layout(); plt.show()
 
-# Plot 5: Feature Importance
 importances = model.feature_importances_
 plt.figure(figsize=(8, 5))
 plt.barh(features, importances)
 plt.title('Global: Feature Importances (XGBoost)')
 plt.xlabel('Importance'); plt.grid(True); plt.tight_layout(); plt.show()
 
-# 
-# PER-WARD FORECASTS
-# 
+# PER-WARD FORECASTS (with past + future)
 
 wards = df_burglary['NAME'].dropna().unique()
 ward_forecasts = []
@@ -139,7 +121,7 @@ for ward in wards:
     )
     ward_monthly['Date'] = ward_monthly['Month'].dt.to_timestamp()
     if len(ward_monthly) < 24:
-        continue  # skip if not enough data
+        continue
 
     ward_monthly = ward_monthly.sort_values('Date').reset_index(drop=True)
     ward_monthly['Year'] = ward_monthly['Date'].dt.year
@@ -154,7 +136,11 @@ for ward in wards:
     model = XGBRegressor(objective='reg:squarederror', max_depth=3, learning_rate=0.1, n_estimators=100, random_state=42)
     model.fit(X_ward, y_ward)
 
-    # Forecast future
+    # Predict on past
+    ward_monthly['Predicted'] = model.predict(X_ward)
+    ward_monthly['Ward'] = ward
+
+    # Predict on future
     last_index = ward_monthly['TimeIndex'].max()
     future_dates = pd.date_range(start=ward_monthly['Date'].max() + pd.offsets.MonthBegin(1), periods=24, freq='MS')
     future_df = pd.DataFrame({'Date': future_dates})
@@ -163,28 +149,25 @@ for ward in wards:
     future_df['TimeIndex'] = np.arange(last_index + 1, last_index + 25)
     future_df['Month_sin'] = np.sin(2 * np.pi * future_df['MonthNum'] / 12)
     future_df['Month_cos'] = np.cos(2 * np.pi * future_df['MonthNum'] / 12)
-
     future_df['Predicted'] = model.predict(future_df[features])
     future_df['Ward'] = ward
-    ward_forecasts.append(future_df[['Date', 'Ward', 'Predicted']])
 
-# Save to CSV
+    # Combine past + future
+    combined_df = pd.concat([
+        ward_monthly[['Date', 'Ward', 'Predicted']],
+        future_df[['Date', 'Ward', 'Predicted']]
+    ])
+    ward_forecasts.append(combined_df)
+
 if ward_forecasts:
     df_all_wards = pd.concat(ward_forecasts)
     df_all_wards.to_csv('ward_level_xgb_forecasts.csv', index=False)
-    print("\n Saved ward-level XGBoost forecasts to 'ward_level_xgb_forecasts.csv'")
+    print("\nSaved ward-level XGBoost forecasts to 'ward_level_xgb_forecasts.csv'")
 else:
-    print("\n No ward forecasts generated (insufficient data)")
+    print("\nNo ward forecasts generated (insufficient data)")
 
-#
-# Interactive plot for ward predictions
-#
+# INTERACTIVE DROPDOWN PLOTLY FOR WARDS
 
-# Read forecasts
-forecast_df = pd.read_csv('ward_level_xgb_forecasts.csv')
-forecast_df['Date'] = pd.to_datetime(forecast_df['Date'])
-
-# Prepare actuals from original data
 actuals_df = (
     df_burglary
     .groupby(['NAME', df_burglary['Month'].dt.to_period('M')])
@@ -194,10 +177,10 @@ actuals_df = (
 actuals_df['Date'] = actuals_df['Month'].dt.to_timestamp()
 wards = sorted(actuals_df['NAME'].unique())
 
-# Create figure
-fig = go.Figure()
+forecast_df = df_all_wards.copy()
+forecast_df['Date'] = pd.to_datetime(forecast_df['Date'])
 
-# Add traces for each ward (hidden by default)
+fig = go.Figure()
 for i, ward in enumerate(wards):
     actual = actuals_df[actuals_df['NAME'] == ward]
     forecast = forecast_df[forecast_df['Ward'] == ward]
@@ -216,12 +199,11 @@ for i, ward in enumerate(wards):
         legendgroup=ward, showlegend=(i == 0)
     ))
 
-# Create dropdown menu
 dropdown_buttons = []
 for i, ward in enumerate(wards):
     visibility = [False] * len(wards) * 2
-    visibility[i * 2] = True     # Actual
-    visibility[i * 2 + 1] = True # Forecast
+    visibility[i * 2] = True
+    visibility[i * 2 + 1] = True
 
     dropdown_buttons.append(dict(
         label=ward,
@@ -230,7 +212,6 @@ for i, ward in enumerate(wards):
               {'title': f"Burglary Forecast for {ward}"}]
     ))
 
-# Update layout with dropdown
 fig.update_layout(
     updatemenus=[{
         'active': 0,
