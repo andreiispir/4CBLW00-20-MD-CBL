@@ -209,15 +209,28 @@ app.layout = html.Div([
 # Update ward dropdown based on borough selection
 @app.callback(
     Output('ward-search', 'options'),
+    Input('ward-search', 'search_value'),
     Input('borough-search', 'value')
 )
-def update_wards(selected_borough):
-    if selected_borough is None:
-        return [{'label': name, 'value': name} for name in ward_names]
-    
-    filtered_df = df_clean1[df_clean1['BOROUGH'] == selected_borough]
-    filtered_wards = sorted(filtered_df['NAME'].unique())
-    return [{'label': ward, 'value': ward} for ward in filtered_wards]
+def smart_prefix_search_wards(search_value, selected_borough):
+    if selected_borough:
+        df_filtered = df_clean1[df_clean1['BOROUGH'] == selected_borough]
+    else:
+        df_filtered = df_clean
+
+    wards_filtered = df_filtered['NAME'].unique()
+
+    if not search_value:
+        return [{'label': name, 'value': name} for name in sorted(wards_filtered)]
+
+    search_value_lower = search_value.lower()
+
+    def word_starts_with(text):
+        return any(word.startswith(search_value_lower) for word in text.lower().split())
+
+    matched_wards = [name for name in wards_filtered if word_starts_with(name)]
+
+    return [{'label': name, 'value': name} for name in sorted(matched_wards)]
 
 # Run the app
 if __name__ == '__main__':
