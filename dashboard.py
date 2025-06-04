@@ -1,121 +1,98 @@
 import dash
-from dash import html, dcc, Input, Output, State, ctx
-import pandas as pd
-import plotly.express as px
-import json
+from dash import dcc, html
 import geopandas as gpd
+import pandas as pd
+from shapely import wkt
+import plotly.express as px
+from dash import dcc, html, Input, Output, State
 
-gdf = gpd.read_file("C:/Users/mariz/OneDrive - TU Eindhoven/Desktop/statistical-gis-boundaries-london/statistical-gis-boundaries-london/ESRI/London_Ward_CityMerged.shp")
-gdf.to_file("london_wards.geojson", driver="GeoJSON")
+df = pd.read_csv("wards_for_map.csv")
+df["geometry"] = df["geometry"].apply(wkt.loads)
+geometry = gpd.GeoSeries(df["geometry"], crs="EPSG:4326")
+gdf = gpd.GeoDataFrame(df, geometry=geometry)
 
-# Loading the GeoJSON
-with open("london_wards.geojson", "r", encoding="utf-8") as file:
-    wards_geojson = json.load(file)
 
-df = pd.read_csv("london_crime_with_wards.csv")
-df['Month'] = pd.to_datetime(df['Month'], format='%Y-%m', errors='coerce')
-df['MonthYear'] = df['Month'].dt.strftime('%m/%Y')
-df['BurglaryCount'] = 1
+geojson_data = gdf.reset_index().__geo_interface__
 
-#dropdown options
-date_options = [{'label': d, 'value': d} for d in sorted(df['MonthYear'].dropna().unique())]
-
-#Dash app
+# Setup app
 app = dash.Dash(__name__)
-app.title = "London Burglary Choropleth"
+app.title = "London Ward Heatmap"
+
+# map
+def create_map(selected_names=None):
+    fig = px.choropleth_mapbox(
+        gdf,
+        geojson=geojson_data,
+        locations="NAME",
+        color="no_cases",
+        color_continuous_scale="YlOrRd",
+        mapbox_style="carto-positron",
+        zoom=9,
+        center={"lat": 51.5074, "lon": -0.1278},
+        opacity=0.6,
+        featureidkey="properties.NAME",
+        labels={"no_cases": "Number of Cases"}
+    )
+
+    fig.update_layout(
+        margin={"r": 0, "t": 0, "l": 0, "b": 0},
+        dragmode="lasso"
+    )
+    if selected_names:
+        selected_idxs = [i for i, name in enumerate(gdf["NAME"]) if name in selected_names]
+        fig.update_traces(
+            selectedpoints=selected_idxs,
+            selected=dict(marker=dict(opacity=1)),
+            unselected=dict(marker=dict(opacity=0.3))
+        )
+
+    return fig
 
 # Layout
 app.layout = html.Div([
+    html.H2("London Ward Heatmap — Burglary Counts", style={'textAlign': 'center'}),
+
     html.Div([
-        html.H2("Filters", style={'margin-bottom': '10px'}),
-
-        html.Label("Select Date (MM/YYYY):"),
-        dcc.Dropdown(
-            id='date-dropdown',
-            options=date_options,
-            placeholder="Select a date",
-            value=None,
-            clearable=True
-        ),
-
-        html.Br(),
-        html.Label("Search Ward:"),
-        dcc.Input(
-            id='ward-search',
-            type='text',
-            placeholder='Enter ward name',
-            debounce=True,
-            style={'width': '100%'}
-        ),
-
+        html.Label("Enter ward names (comma-separated):"),
+        dcc.Input(id='text-input', type='text', placeholder='e.g. Willesden Green, Cricklewood', style={'width': '100%'}),
         html.Br(), html.Br(),
-        html.Button("Reset", id='reset-button', n_clicks=0),
-
-    ], style={
-        'width': '25%',
-        'padding': '20px',
-        'position': 'absolute',
-        'top': '20px',
-        'left': '20px',
-        'backgroundColor': '#f9f9f9',
-        'border': '1px solid #ddd',
-        'border-radius': '5px',
-        'box-shadow': '0 2px 4px rgba(0,0,0,0.1)',
-        'zIndex': '999'
-    }),
+        html.Button("Reset Selection", id="reset-button", n_clicks=0),
+    ], style={"width": "25%", "display": "inline-block", "padding": "20px", "verticalAlign": "top"}),
 
     html.Div([
-        dcc.Graph(id='choropleth-map', style={'height': '100vh'})
-    ], style={'marginLeft': '30%'})
+        dcc.Graph(id="map", figure=create_map(), config={'displayModeBar': True})
+    ], style={"width": "70%", "display": "inline-block", "verticalAlign": "top"})
 ])
 
 # Callback
 @app.callback(
-    Output('choropleth-map', 'figure'),
-    Output('date-dropdown', 'value'),
-    Output('ward-search', 'value'),
-    Input('date-dropdown', 'value'),
-    Input('ward-search', 'value'),
-    Input('reset-button', 'n_clicks'),
+    Output("map", "figure"),
+    Input("map", "selectedData"),
+    Input("text-input", "value"),
+    Input("reset-button", "n_clicks"),
+    prevent_initial_call=True
 )
-def update_map(selected_date, search_ward, reset_clicks):
-    triggered_id = ctx.triggered_id if ctx.triggered_id else None
+def update_map(selectedData, text_input, reset_clicks):
+    ctx = dash.callback_context
+    triggered = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else None
 
-    # Reset
-    if triggered_id == 'reset-button':
-        selected_date = None
-        search_ward = ''
+    if triggered == "reset-button":
+        return create_map()
 
-    # Filter the data
-    filtered_df = df.copy()
-    if selected_date:
-        filtered_df = filtered_df[filtered_df['MonthYear'] == selected_date]
-    if search_ward:
-        filtered_df = filtered_df[filtered_df['NAME'].str.contains(search_ward, case=False, na=False)]
+    selected_names = set()
 
+    #box/lasso selection
+    if selectedData and "points" in selectedData:
+        selected_names.update(p["location"] for p in selectedData["points"] if "location" in p)
 
-    ward_counts = filtered_df.groupby('NAME').size().reset_index(name='BurglaryCount')
-    all_wards = [f['properties']['NAME'] for f in wards_geojson['features']]
-    ward_counts = pd.DataFrame({'NAME': all_wards}).merge(ward_counts, on='NAME', how='left').fillna(0)
+    #manual text input
+    if text_input:
+        user_input = [name.strip() for name in text_input.split(",")]
+        matched = [name for name in user_input if name in gdf["NAME"].values]
+        selected_names.update(matched)
 
-    # map
-    fig = px.choropleth_mapbox(
-        ward_counts,
-        geojson=wards_geojson,
-        locations='NAME',
-        featureidkey="properties.NAME",
-        color='BurglaryCount',
-        color_continuous_scale="Reds",
-        mapbox_style="carto-positron",
-        center={"lat": 51.5074, "lon": -0.1278},
-        zoom=9,
-        opacity=0.6,
-        labels={'BurglaryCount': 'Burglary Count'}
-    )
-    fig.update_layout(margin={"r":0, "t":0, "l":0, "b":0})
-
-    return fig, selected_date, search_ward
+    return create_map(selected_names=selected_names if selected_names else None)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run_server(debug=True)
