@@ -1,0 +1,167 @@
+import pandas as pd
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+from xgboost import XGBRegressor
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+# ------------------------------
+# Load and prepare data
+csv_path = r"C:\Users\HP\Downloads\(Copy) london_crime_with_wards.csv"
+df = pd.read_csv(csv_path)
+df['Month'] = pd.to_datetime(df['Month'])
+df['Year'] = df['Month'].dt.year
+df['MonthNum'] = df['Month'].dt.month
+
+df_burglary = df[df['Crime type'] == 'Burglary'].copy()
+df_burglary = df_burglary[df_burglary['Year'] >= 2020]
+
+df_global = df_burglary.groupby(['Year', 'MonthNum']).size().reset_index(name='Count')
+df_global['Date'] = pd.to_datetime(df_global['Year'].astype(str) + '-' + df_global['MonthNum'].astype(str)) + pd.offsets.MonthBegin(0)
+df_global = df_global.sort_values('Date').reset_index(drop=True)
+
+df_global['TimeIndex'] = np.arange(len(df_global))
+df_global['Month_sin'] = np.sin(2 * np.pi * df_global['MonthNum'] / 12)
+df_global['Month_cos'] = np.cos(2 * np.pi * df_global['MonthNum'] / 12)
+
+features = ['Year', 'MonthNum', 'TimeIndex', 'Month_sin', 'Month_cos']
+X = df_global[features]
+y = df_global['Count']
+dates = df_global['Date']
+
+tscv = TimeSeriesSplit(n_splits=5)
+all_actuals, all_predictions, all_dates = [], [], []
+
+for train_idx, test_idx in tscv.split(X):
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+    dates_test = dates.iloc[test_idx]
+
+    model = XGBRegressor(objective='reg:squarederror', max_depth=3, learning_rate=0.1, n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    all_actuals.extend(y_test)
+    all_predictions.extend(y_pred)
+    all_dates.extend(dates_test)
+
+results_df = pd.DataFrame({'Date': all_dates, 'Actual': all_actuals, 'Predicted': all_predictions}).sort_values('Date')
+
+mse = mean_squared_error(results_df['Actual'], results_df['Predicted'])
+mae = mean_absolute_error(results_df['Actual'], results_df['Predicted'])
+print(f'MSE (Global): {mse:.2f}, MAE (Global): {mae:.2f}')
+
+# Forecast future 24 months
+last_date = df_global['Date'].max()
+last_time_index = df_global['TimeIndex'].max()
+future_dates = pd.date_range(start=last_date + pd.offsets.MonthBegin(1), periods=24, freq='MS')
+future_df = pd.DataFrame({'Date': future_dates})
+future_df['Year'] = future_df['Date'].dt.year
+future_df['MonthNum'] = future_df['Date'].dt.month
+future_df['TimeIndex'] = np.arange(last_time_index + 1, last_time_index + 25)
+future_df['Month_sin'] = np.sin(2 * np.pi * future_df['MonthNum'] / 12)
+future_df['Month_cos'] = np.cos(2 * np.pi * future_df['MonthNum'] / 12)
+future_df['Predicted'] = model.predict(future_df[features])
+
+forecast_df = pd.DataFrame({'Date': future_df['Date'], 'Actual': np.nan, 'Predicted': future_df['Predicted']})
+full_df = pd.concat([results_df, forecast_df]).sort_values('Date').reset_index(drop=True)
+
+# Ward-level forecasts
+wards = df_burglary['NAME'].dropna().unique()
+ward_forecasts = []
+
+for ward in wards:
+    ward_data = df_burglary[df_burglary['NAME'] == ward]
+    ward_monthly = (
+        ward_data.groupby([ward_data['Month'].dt.to_period('M')])
+        .size()
+        .reset_index(name='Count')
+    )
+    ward_monthly['Date'] = ward_monthly['Month'].dt.to_timestamp()
+    if len(ward_monthly) < 24:
+        continue
+
+    ward_monthly = ward_monthly.sort_values('Date').reset_index(drop=True)
+    ward_monthly['Year'] = ward_monthly['Date'].dt.year
+    ward_monthly['MonthNum'] = ward_monthly['Date'].dt.month
+    ward_monthly['TimeIndex'] = np.arange(len(ward_monthly))
+    ward_monthly['Month_sin'] = np.sin(2 * np.pi * ward_monthly['MonthNum'] / 12)
+    ward_monthly['Month_cos'] = np.cos(2 * np.pi * ward_monthly['MonthNum'] / 12)
+
+    X_ward = ward_monthly[features]
+    y_ward = ward_monthly['Count']
+
+    model = XGBRegressor(objective='reg:squarederror', max_depth=3, learning_rate=0.1, n_estimators=100, random_state=42)
+    model.fit(X_ward, y_ward)
+
+    ward_monthly['Predicted'] = model.predict(X_ward)
+    ward_monthly['Ward'] = ward
+
+    last_index = ward_monthly['TimeIndex'].max()
+    future_dates = pd.date_range(start=ward_monthly['Date'].max() + pd.offsets.MonthBegin(1), periods=24, freq='MS')
+    future_df = pd.DataFrame({'Date': future_dates})
+    future_df['Year'] = future_df['Date'].dt.year
+    future_df['MonthNum'] = future_df['Date'].dt.month
+    future_df['TimeIndex'] = np.arange(last_index + 1, last_index + 25)
+    future_df['Month_sin'] = np.sin(2 * np.pi * future_df['MonthNum'] / 12)
+    future_df['Month_cos'] = np.cos(2 * np.pi * future_df['MonthNum'] / 12)
+    future_df['Predicted'] = model.predict(future_df[features])
+    future_df['Ward'] = ward
+
+    combined_df = pd.concat([ward_monthly[['Date', 'Ward', 'Predicted']], future_df[['Date', 'Ward', 'Predicted']]])
+    ward_forecasts.append(combined_df)
+
+if ward_forecasts:
+    df_all_wards = pd.concat(ward_forecasts)
+    df_all_wards.to_csv('ward_level_xgb_forecasts.csv', index=False)
+    print("Saved ward-level XGBoost forecasts to 'ward_level_xgb_forecasts.csv'")
+else:
+    print("No ward forecasts generated (insufficient data)")
+
+# ------------------------------
+# Load ward shapefile for mapping
+shapefile_path = r"C:\Users\HP\Downloads\London-wards-2018\London-wards-2018_ESRI\London_Ward.shp"
+wards_gdf = gpd.read_file(shapefile_path)
+
+# User input: select month to visualize
+input_month = input("Enter the month to visualize (YYYY-MM): ")
+selected_date = pd.to_datetime(input_month)
+
+# Load ward-level forecast data (make sure to have generated it above)
+df_all_wards = pd.read_csv('ward_level_xgb_forecasts.csv')
+df_all_wards['Date'] = pd.to_datetime(df_all_wards['Date'])
+
+# Filter forecast data for the selected month
+month_data = df_all_wards[df_all_wards['Date'] == selected_date].copy()
+
+if 'Ward' not in month_data.columns:
+    raise KeyError("Column 'Ward' not found in forecast data.")
+
+max_predicted = month_data['Predicted'].max()
+if max_predicted == 0:
+    max_predicted = 1  # avoid division by zero
+
+month_data.loc[:, 'Weight'] = month_data['Predicted'] / max_predicted
+month_data.loc[:, 'Officers'] = (month_data['Weight'] * 100).round().astype(int)
+month_data.loc[:, 'Officers'] = month_data['Officers'].clip(upper=100)
+
+# Merge with ward geometries
+allocation_df = month_data[['Ward', 'Officers']].rename(columns={'Ward': 'NAME'})
+merged_gdf = wards_gdf.merge(allocation_df, on='NAME', how='left')
+merged_gdf['Officers'] = merged_gdf['Officers'].fillna(0).astype(int)
+
+# Plot map
+fig, ax = plt.subplots(1, 1, figsize=(12, 12))
+merged_gdf.plot(column='Officers', cmap='OrRd', linewidth=0.8, ax=ax, edgecolor='0.8', legend=True)
+
+ax.set_title(f'Officer Allocation by Ward for {input_month}', fontsize=16)
+
+# Annotate with officers count
+for idx, row in merged_gdf.iterrows():
+    if row['Officers'] > 0:
+        plt.annotate(str(row['Officers']), xy=(row['geometry'].centroid.x, row['geometry'].centroid.y),
+                     ha='center', fontsize=8, fontweight='bold')
+
+ax.axis('off')
+plt.show()
