@@ -1,0 +1,61 @@
+import pandas as pd
+
+def allocate_officers(forecast_file, output_file):
+    """
+    Allocate officers to wards based on forecast data.
+
+    Parameters:
+        forecast_file (str): Path to the input CSV file with forecast data.
+        output_file (str): Path to save the output CSV file with officer allocation.
+
+    Returns:
+        None
+    """
+    # Load forecast data
+    df = pd.read_csv(forecast_file)
+    df['ds'] = pd.to_datetime(df['ds'])  # Use 'ds' column for dates
+
+    # Create a Month column for grouping
+    df['Month'] = df['ds'].dt.to_period('M').astype(str)
+
+    results = []
+
+    # Process each month separately
+    for month, group in df.groupby('Month'):
+        # Defensive: drop rows with missing yhat (Predicted)
+        group = group.dropna(subset=['yhat'])  # Use 'yhat' as the predicted values
+
+        if group.empty:
+            print(f"No predicted data for month {month}, skipping.")
+            continue
+
+        max_pred = group['yhat'].max()  # Use 'yhat' for max prediction
+
+        # Calculate weight = yhat / max_pred (to scale from 0 to 1)
+        group['Weight'] = group['yhat'] / max_pred  # Use 'yhat'
+
+        # Officers allocated = weight * 100, rounded and capped at 100 max
+        group['Officers'] = (group['Weight'] * 100).round().clip(upper=100).astype(int)
+
+        # Collect results
+        for _, row in group.iterrows():
+            results.append({
+                'Month': month,
+                'Ward': row['Ward'],  # No fallback required if 'Ward' always exists
+                'Officers': row['Officers']
+            })
+
+    # Save all allocations to CSV
+    allocation_df = pd.DataFrame(results)
+    allocation_df.to_csv(output_file, index=False)
+
+    # Get unique wards count
+    unique_wards_count = allocation_df['Ward'].nunique()
+    print(f"Number of unique wards in the allocation: {unique_wards_count}")
+
+    print(f"Officer allocation for all months saved to {output_file}.")
+
+# Example usage
+forecast_file = r"C:\Users\HP\Downloads\ward_level_burglary_forecasts.csv"
+output_file = r"C:\Users\HP\ward_officer_allocation_full.csv"
+allocate_officers(forecast_file, output_file)
