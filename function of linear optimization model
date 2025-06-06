@@ -1,0 +1,58 @@
+import pandas as pd
+
+def process_officer_allocation(forecast_file, output_file):
+    """
+    Processes officer allocation from forecast data and saves the results to a CSV file.
+    
+    Parameters:
+        forecast_file (str): Path to the CSV file containing forecast data.
+        output_file (str): Path to save the output CSV file with officer allocations.
+    """
+    # Load forecast data
+    df = pd.read_csv(forecast_file)
+    df['Date'] = pd.to_datetime(df['Date'])
+    
+    # Create a Month column for grouping
+    df['Month'] = df['Date'].dt.to_period('M').astype(str)
+    
+    results = []
+    
+    # Process each month separately
+    for month, group in df.groupby('Month'):
+        # Defensive: drop rows with missing Predicted
+        group = group.dropna(subset=['Predicted'])
+        
+        if group.empty:
+            print(f"No predicted data for month {month}, skipping.")
+            continue
+        
+        max_pred = group['Predicted'].max()
+        
+        # Calculate weight = Predicted / max_pred (to scale from 0 to 1)
+        group['Weight'] = group['Predicted'] / max_pred
+        
+        # Officers allocated = weight * 100, rounded and capped at 100 max
+        group['Officers'] = (group['Weight'] * 100).round().clip(upper=100).astype(int)
+        
+        # Collect results
+        for _, row in group.iterrows():
+            results.append({
+                'Month': month,
+                'Ward': row['Ward'],
+                'Officers': row['Officers']
+            })
+    
+    # Save all allocations to CSV
+    allocation_df = pd.DataFrame(results)
+    allocation_df.to_csv(output_file, index=False)
+    
+    # Get unique wards count
+    unique_wards_count = allocation_df['Ward'].nunique()
+    print(f"Number of unique wards in the allocation: {unique_wards_count}")
+    
+    print(f"Officer allocation for all months saved to {output_file}.")
+
+# Example usage
+forecast_file = r"C:\Users\HP\ward_level_xgb_forecasts.csv"
+output_file = r"C:\Users\HP\ward_officer_allocation_full.csv"
+process_officer_allocation(forecast_file, output_file)
