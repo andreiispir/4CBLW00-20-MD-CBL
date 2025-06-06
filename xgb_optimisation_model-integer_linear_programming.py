@@ -9,7 +9,7 @@ from scipy import stats
 
 global_allocation = {}
 
-def ilp_optimisation_model_prophet(csv_path):
+def ilp_optimisation_model_xgboost(csv_path):
     """
     Optimisation model for allocating police officers to wards based on burglary forecasts.
     
@@ -20,11 +20,10 @@ def ilp_optimisation_model_prophet(csv_path):
     dict: A dictionary with ward names as keys and the number of officers allocated as values.
     """
     global global_allocation
-    
     df = pd.read_csv(csv_path)
 
     # Calculate average predictions
-    crime_counts = df.groupby("Ward")['yhat'].mean().to_dict()
+    crime_counts = df.groupby("Ward")['Predicted'].mean().to_dict()
     wards = list(crime_counts.keys())
 
     # Calculate total crimes and crime proportions
@@ -87,10 +86,10 @@ def ilp_optimisation_model_prophet(csv_path):
 
 
 current_dir = os.getcwd()
-csv_filename = 'ward_level_burglary_forecasts.csv'
+csv_filename = 'ward_level_xgb_forecasts.csv'
 csv_path = os.path.join(current_dir, csv_filename)
 
-optimisation = ilp_optimisation_model_prophet(csv_path)
+optimisation = ilp_optimisation_model_xgboost(csv_path)
 
 
 
@@ -113,12 +112,12 @@ merged_gdf = wards_gdf.merge(allocation_df, on='NAME')
 # Plot the results
 fig, ax = plt.subplots(1, 1, figsize=(12, 12))
 merged_gdf.plot(column='Officers', cmap='Blues', linewidth=0.8, ax=ax, edgecolor='0.8', legend=True)
-ax.set_title('Optimized Police Officer Allocation per London Ward - Prophet', fontsize=15)
+ax.set_title('Optimized Police Officer Allocation per London Ward - XGBoost', fontsize=15)
 ax.axis('off')
 plt.show()
 
 # Save the plot
-fig.savefig("officer_allocation_forecast_map - Prophet.png", dpi=300)
+fig.savefig("officer_allocation_forecast_map - XGBoost.png", dpi=300)
 
 # Print some statistics
 print("\nAllocation Statistics:")
@@ -134,8 +133,11 @@ for ward, officers in sorted(optimisation.items(), key=lambda x: x[1], reverse=T
 
 
 
+
 df = pd.read_csv(csv_path)
-crime_counts = df.groupby("Ward")['yhat'].mean().to_dict()
+
+    # Calculate average predictions
+crime_counts = df.groupby("Ward")['Predicted'].mean().to_dict()
 # Creating a DataFrame for analysis
 analysis_df = pd.DataFrame({'Ward': list(crime_counts.keys()),'Crimes': list(crime_counts.values()),'Officers': [global_allocation[ward] for ward in crime_counts.keys()]})
 
