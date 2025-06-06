@@ -232,6 +232,24 @@ def smart_prefix_search_wards(search_value, selected_borough):
 
     return [{'label': name, 'value': name} for name in sorted(matched_wards)]
 
+@app.callback(
+    Output('borough-search', 'options'),
+    Input('borough-search', 'search_value')
+)
+def smart_prefix_search_boroughs(search_value):
+    if not search_value:
+        return [{'label': name, 'value': name} for name in borough_names]
+
+    search_value_lower = search_value.lower()
+
+    def word_starts_with(text):
+        return any(word.startswith(search_value_lower) for word in text.lower().split())
+
+    matched_boroughs = [name for name in borough_names if word_starts_with(name)]
+
+    return [{'label': name, 'value': name} for name in sorted(matched_boroughs)]
+
+
 # Run the app
 if __name__ == '__main__':
     app.run(debug=True)
