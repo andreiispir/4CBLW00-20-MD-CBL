@@ -7,7 +7,13 @@ import dash_leaflet as dl
 import dash_leaflet.express as dlx
 import json
 from shapely import wkt
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+import numpy as np
+from dash import callback_context
+import dash
 
+# Getting things from ILP
 
 # testing logic:
 #current_year = '2028' 
@@ -25,8 +31,70 @@ df = pd.read_csv(csv_path)
 
 
 # Load wards with geometry and quantile
+# Load data from Alicja's csv forecast, later will be changed
 wards_df = pd.read_csv("wards_for_map.csv")
 wards_df["geometry"] = wards_df["geometry"].apply(wkt.loads)
+alicja_filename = "officer_allocation_forecast.csv"
+alicja_path = os.path.join(current_dir, alicja_filename)
+df_alicja = pd.read_csv(alicja_path)
+df_alicja = df_alicja.rename(columns={'Unnamed: 0': 'NAME'})
+wards_df = wards_df.merge(df_alicja[['NAME', 'Officers']], on='NAME', how='left')
+
+df['Month'] = pd.to_datetime(df['Month'], format='%Y-%m')
+
+df_filtered = df[df['Month'].dt.year > 2020]
+df_filtered = df_filtered[df_filtered['Month'].dt.month.isin([11, 12, 1])]
+
+month_map = {11: 'nov', 12: 'dec', 1: 'jan'}
+df_filtered['month_col'] = df_filtered['Month'].dt.month.map(month_map)
+
+crime_counts = df_filtered.groupby(['NAME', 'month_col']).size().unstack(fill_value=0)
+
+for col in ['nov', 'dec', 'jan']:
+    if col not in crime_counts.columns:
+        crime_counts[col] = 0
+
+wards_df = wards_df.merge(crime_counts[['nov', 'dec', 'jan']], on='NAME', how='left')
+
+wards_df[['nov', 'dec', 'jan']] = wards_df[['nov', 'dec', 'jan']].fillna(0).astype(int)
+
+wards_df['risky'] = wards_df[['nov', 'dec', 'jan']].sum(axis=1)
+
+# Define custom quantile bins
+quantile_bins = [0, 0.15, 0.3, 0.45, 0.6, 0.8, 1.0]
+quantile_labels = [f'P{i}' for i in range(6, 0, -1)]  # P11 = top 5%, ..., P1 = bottom 20%
+
+# Apply qcut to assign quantiles
+wards_df['quantile2'] = pd.qcut(
+    wards_df['Officers'],
+    q=quantile_bins,
+    labels=quantile_labels
+)
+
+# Assign quantiles for each month column
+wards_df['quantile_nov'] = pd.qcut(
+    wards_df['nov'],
+    q=quantile_bins,
+    labels=quantile_labels
+)
+
+wards_df['quantile_dec'] = pd.qcut(
+    wards_df['dec'],
+    q=quantile_bins,
+    labels=quantile_labels
+)
+
+wards_df['quantile_jan'] = pd.qcut(
+    wards_df['jan'],
+    q=quantile_bins,
+    labels=quantile_labels
+)
+
+wards_df['quantile_risky'] = pd.qcut(
+    wards_df['risky'],
+    q=quantile_bins,
+    labels=quantile_labels
+)
 
 # Color map for quantiles
 quantile_colors = {
@@ -47,6 +115,7 @@ quantile_labels = {
     "P1": "Extremely High"
 }
 
+
 # Creating layers used to plot a map
 def make_layer(quantile_code):
     color = quantile_colors[quantile_code]
@@ -66,6 +135,75 @@ def make_layer(quantile_code):
                 "NAME": row["NAME"],
                 "BOROUGH": row["BOROUGH"],
                 "tooltip": f"{row['NAME']} ({row['BOROUGH']})"
+            }
+        })
+
+    geojson = {
+        "type": "FeatureCollection",
+        "features": features
+    }
+
+    return dl.GeoJSON(
+        data=geojson,
+        style=dict(fillColor=color, color="black", weight=1, fillOpacity=0.6),
+        zoomToBounds=False,
+        zoomToBoundsOnClick=False,
+        hoverStyle={"weight": 4, "color": "red"}
+    )
+
+def make_layer_quantile2(q_code):
+    color = quantile_colors[q_code]
+    features = []
+
+    for _, row in wards_df[wards_df["quantile2"] == q_code].iterrows():
+        poly = row["geometry"]
+        coords = [[list(p) for p in poly.exterior.coords]] if poly.geom_type == "Polygon" else \
+                 [[[list(p) for p in part.exterior.coords]] for part in poly.geoms]
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": poly.geom_type,
+                "coordinates": coords
+            },
+            "properties": {
+                "NAME": row["NAME"],
+                "BOROUGH": row["BOROUGH"],
+                "tooltip": f"{row['NAME']} ({row['BOROUGH']}): {row['Officers']} officers"
+            }
+        })
+
+    geojson = {
+        "type": "FeatureCollection",
+        "features": features
+    }
+
+    return dl.GeoJSON(
+        data=geojson,
+        style=dict(fillColor=color, color="black", weight=1, fillOpacity=0.6),
+        zoomToBounds=False,
+        zoomToBoundsOnClick=False,
+        hoverStyle={"weight": 4, "color": "red"}
+    )
+
+def make_layer_risky_months(quantile_column, q_code):
+    color = quantile_colors[q_code]
+    features = []
+
+    for _, row in wards_df[wards_df[quantile_column] == q_code].iterrows():
+        poly = row["geometry"]
+        coords = [[list(p) for p in poly.exterior.coords]] if poly.geom_type == "Polygon" else \
+                 [[[list(p) for p in part.exterior.coords]] for part in poly.geoms]
+        tooltip = f"{row['NAME']} ({row['BOROUGH']})"
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": poly.geom_type,
+                "coordinates": coords
+            },
+            "properties": {
+                "NAME": row["NAME"],
+                "BOROUGH": row["BOROUGH"],
+                "tooltip": tooltip
             }
         })
 
@@ -114,7 +252,9 @@ app.layout = html.Div([
         'justifyContent': 'center',
         'alignItems': 'center'}),
     html.Div([
-        html.Div([html.Label('Select year:', style = {'color': '#2f3e46', 'backgroundColor': '#84a98c', 'width': '170px',
+        html.Div([
+            html.Div([
+            html.Label('Select year:', style = {'color': '#2f3e46', 'backgroundColor': '#84a98c', 'width': '170px',
                                                         'fontWeight': 'bold',
                                                         'marginTop': '25px',
                                                         'textAlign': 'center',
@@ -171,25 +311,72 @@ app.layout = html.Div([
                            'border': '3px solid #2f3e46', 'borderRadius': '5px',
                            'fontWeight': 'bold',
                            'fontSize': '20px'}
-                    )], style = {
+                    ),
+            ], style = {'width': '90%',
+                        'border': '3px solid #2f3e46',
+                        'borderRadius': '5px',
+                        'display': 'flex',
+                        'flex-direction': 'column',
+                        'align-items': 'center',
+                        'justify-content': 'flex-start',
+                        'padding': '10px',
+                        'margin': '20px'
+                        }),
+            html.Div([
+                html.Button('Display Risky Months', id='risky-months', n_clicks=0, style={'width': '300px', 'margin': '10px', 'color': '#2f3e46', 'backgroundColor': '#84a98c',
+                                                                                        'textAlign': 'center',
+                                                                                        'border': '3px solid #2f3e46', 'borderRadius': '5px',
+                                                                                        'fontWeight': 'bold',
+                                                                                        'fontSize': '20px'}),
+                html.Label('Select Month:', style = {'color': '#2f3e46', 'backgroundColor': '#84a98c', 'width': '170px',
+                                                        'fontWeight': 'bold',
+                                                        'marginTop': '25px',
+                                                        'textAlign': 'center',
+                                                        'border': '3px solid #2f3e46', 'borderRadius': '5px'}),
+                dcc.RadioItems(
+                id = 'risky-month-selector',
+                options = [{'label': 'All', 'value': 'risky'},
+                           {'label': 'November', 'value': 'nov'},
+                           {'label': 'December', 'value': 'dec'},
+                           {'label': 'January', 'value': 'jan'}],
+                value = 'risky',
+                inline = True,
+                labelStyle = {'marginRight': '10px', 'marginTop': '15px'},
+                style = {
                     'display': 'flex',
-                    'flex-direction': 'column',
+                    'flex-direction': 'row',
                     'align-items': 'center',
-                    'justify-content': 'flex-start',
-                    'padding': '10px',
-                    'width': '20%',
-                    'height': '500px',
-                    'border': '3px solid #2f3e46',
-                    'borderRadius': '10px',
-                    'fontSize': '20px',
-                    'margin': '20px'
+                    'justify-content': 'center',
+                }
+                ),
+            ], style = {'width': '90%',
+                        'border': '3px solid #2f3e46',
+                        'borderRadius': '5px',
+                        'display': 'flex',
+                        'flex-direction': 'column',
+                        'align-items': 'center',
+                        'justify-content': 'flex-start',
+                        'padding': '10px',
+                        'margin': '20px'
+                        }),
+                ], style = {
+            'display': 'flex',
+            'flex-direction': 'column',
+            'align-items': 'center',
+            'justify-content': 'flex-start',
+            'padding': '10px',
+            'width': '20%',
+            'height': '700px',
+            'fontSize': '20px',
+            'margin': '20px'
         }),
         html.Div([
     dl.Map(center=[51.5074, -0.1278], zoom=11, children=[
         dl.TileLayer(url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
                      attribution='&copy; <a href="https://carto.com/">CARTO</a>'),
-        *[make_layer(q) for q in quantile_colors.keys()]
-    ], style={'width': '100%', 'height': '800px'}),
+        #*[make_layer(q) for q in quantile_colors.keys()]
+        dl.LayerGroup(id="map-layer", children=[*([make_layer(q) for q in quantile_colors.keys()])])    
+    ], style={'width': '100%', 'height': '800px', 'border': '3px solid #2f3e46', 'borderRadius': '10px',}),
 
     html.Div(
         children=[
@@ -225,8 +412,6 @@ app.layout = html.Div([
     'position': 'relative',    
     'width': '80%',
     'height': '800px',
-    'border': '3px solid #2f3e46',
-    'borderRadius': '10px',
     'margin': '20px'
 })
 
@@ -238,19 +423,81 @@ app.layout = html.Div([
     })
 ], style = {'backgroundColor': '#cad2c5', 'padding': '10px', 'borderTop': '20px solid #2f3e46'})
 
+# Update ward dropdown based on borough selection
 @app.callback(
     Output('ward-search', 'options'),
+    Input('ward-search', 'search_value'),
     Input('borough-search', 'value')
 )
-def update_wards(selected_borough):
-    if selected_borough is None:
-        # If no borough is selected, show all wards
-        return [{'label': name, 'value': name} for name in ward_names]
-    
-    filtered_df = df_clean1[df_clean1['BOROUGH'] == selected_borough]
-    filtered_wards = sorted(filtered_df['NAME'].unique())
-    return [{'label': ward, 'value': ward} for ward in filtered_wards]
+def smart_prefix_search_wards(search_value, selected_borough):
+    if selected_borough:
+        df_filtered = df_clean1[df_clean1['BOROUGH'] == selected_borough]
+    else:
+        df_filtered = df_clean
 
+    wards_filtered = df_filtered['NAME'].unique()
+
+    if not search_value:
+        return [{'label': name, 'value': name} for name in sorted(wards_filtered)]
+
+    search_value_lower = search_value.lower()
+
+    def word_starts_with(text):
+        return any(word.startswith(search_value_lower) for word in text.lower().split())
+
+    matched_wards = [name for name in wards_filtered if word_starts_with(name)]
+
+    return [{'label': name, 'value': name} for name in sorted(matched_wards)]
+
+@app.callback(
+    Output("map-layer", "children"),
+    Input("submit-button", "n_clicks"),
+    Input("risky-months", "n_clicks"),
+    Input("risky-month-selector", "value"),
+    prevent_initial_call=True
+)
+def update_map(submit_clicks, risky_clicks, risky_month):
+    ctx = callback_context
+
+    if not ctx.triggered:
+        raise dash.exceptions.PreventUpdate
+
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    if trigger_id == "submit-button":
+        # Original behavior: map based on quantile2 (Officers)
+        return [make_layer_quantile2(q) for q in quantile_colors.keys()]
+
+    elif trigger_id == "risky-months":
+        # Behavior based on risky-month-selector
+        quantile_column_map = {
+            'nov': 'quantile_nov',
+            'dec': 'quantile_dec',
+            'jan': 'quantile_jan',
+            'risky': 'quantile_risky'
+        }
+        quantile_column = quantile_column_map.get(risky_month, 'quantile_risky')
+        return [make_layer_risky_months(quantile_column, q) for q in quantile_colors.keys()]
+
+    else:
+        raise dash.exceptions.PreventUpdate
+
+@app.callback(
+Output('borough-search', 'options'),
+Input('borough-search', 'search_value')
+)
+def smart_prefix_search_boroughs(search_value):
+    if not search_value:
+        return [{'label': name, 'value': name} for name in borough_name]
+
+    search_value_lower = search_value.lower()
+
+    def word_starts_with(text):
+        return any(word.startswith(search_value_lower) for word in text.lower().split())
+
+    matched_boroughs = [name for name in borough_name if word_starts_with(name)]
+
+    return [{'label': name, 'value': name} for name in sorted(matched_boroughs)]
 
 if __name__ == '__main__':
     app.run(debug=True)
