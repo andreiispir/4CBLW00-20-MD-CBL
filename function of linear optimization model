@@ -31,8 +31,8 @@ def process_officer_allocation(forecast_file, output_file):
         # Calculate weight = Predicted / max_pred (to scale from 0 to 1)
         group['Weight'] = group['Predicted'] / max_pred
         
-        # Officers allocated = weight * 100, rounded and capped at 100 max
-        group['Officers'] = (group['Weight'] * 100).round().clip(upper=100).astype(int)
+        # Officers allocated = weight * 100, rounded and clipped to range 1–100
+        group['Officers'] = (group['Weight'] * 100).round().clip(lower=1, upper=100).astype(int)
         
         # Collect results
         for _, row in group.iterrows():
