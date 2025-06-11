@@ -12,16 +12,7 @@ import matplotlib.colors as mcolors
 import numpy as np
 from dash import callback_context
 import dash
-
-# Getting things from ILP
-
-# testing logic:
-#current_year = '2028' 
-#year_options = [str(int(current_year) + i) for i in range(3)]
-
-# Creating list for years supporting dates 2 years from current date
-current_year = datetime.now().year
-year_options = [str(current_year + i) for i in range(3)]
+from ILP import ilp_optimisation_model_xgboost
 
 # Loading data set from current directory
 current_dir = os.getcwd()
@@ -31,14 +22,8 @@ df = pd.read_csv(csv_path)
 
 
 # Load wards with geometry and quantile
-# Load data from Alicja's csv forecast, later will be changed
 wards_df = pd.read_csv("wards_for_map.csv")
 wards_df["geometry"] = wards_df["geometry"].apply(wkt.loads)
-alicja_filename = "officer_allocation_forecast.csv"
-alicja_path = os.path.join(current_dir, alicja_filename)
-df_alicja = pd.read_csv(alicja_path)
-df_alicja = df_alicja.rename(columns={'Unnamed: 0': 'NAME'})
-wards_df = wards_df.merge(df_alicja[['NAME', 'Officers']], on='NAME', how='left')
 
 df['Month'] = pd.to_datetime(df['Month'], format='%Y-%m')
 
@@ -63,13 +48,6 @@ wards_df['risky'] = wards_df[['nov', 'dec', 'jan']].sum(axis=1)
 # Define custom quantile bins
 quantile_bins = [0, 0.15, 0.3, 0.45, 0.6, 0.8, 1.0]
 quantile_labels = [f'P{i}' for i in range(6, 0, -1)]  # P11 = top 5%, ..., P1 = bottom 20%
-
-# Apply qcut to assign quantiles
-wards_df['quantile2'] = pd.qcut(
-    wards_df['Officers'],
-    q=quantile_bins,
-    labels=quantile_labels
-)
 
 # Assign quantiles for each month column
 wards_df['quantile_nov'] = pd.qcut(
@@ -106,7 +84,7 @@ quantile_colors = {
     "P1": "#081d58"
 }
 # Labels for Legend 
-quantile_labels = {
+quantile_labels_legend = {
     "P6": "Very Low",
     "P5": "Low",
     "P4": "Moderate",
@@ -151,11 +129,40 @@ def make_layer(quantile_code):
         hoverStyle={"weight": 4, "color": "red"}
     )
 
-def make_layer_quantile2(q_code):
+def make_layer_quantile2(q_code, year, month):
+
+    global wards_df
+    local_wards_df = wards_df.copy()
     color = quantile_colors[q_code]
     features = []
 
-    for _, row in wards_df[wards_df["quantile2"] == q_code].iterrows():
+    prediction_filename = 'ward_level_xgb_forecasts.csv'
+    prediction_path = os.path.join(current_dir, prediction_filename)
+
+    df_alicja = ilp_optimisation_model_xgboost(prediction_path, int(year), int(month))
+    df_alicja = df_alicja.rename(columns={'Ward': 'NAME'})
+    local_wards_df = local_wards_df.merge(df_alicja[['NAME', 'Officers']], on='NAME', how='left')
+
+    try:
+        local_wards_df['quantile2'] = pd.qcut(
+            local_wards_df['Officers'],
+            q=quantile_bins,
+            labels=quantile_labels
+        )
+    except ValueError as e:
+        if "Bin edges must be unique" in str(e):
+            # Fallback: remove 0.8
+            fallback_bins = [0, 0.15, 0.3, 0.45, 0.6, 1.0]
+            fallback_labels = quantile_labels[:len(fallback_bins)-1]
+            local_wards_df['quantile2'] = pd.qcut(
+                local_wards_df['Officers'],
+                q=fallback_bins,
+                labels=fallback_labels
+            )
+        else:
+            raise
+
+    for _, row in local_wards_df[local_wards_df["quantile2"] == q_code].iterrows():
         poly = row["geometry"]
         coords = [[list(p) for p in poly.exterior.coords]] if poly.geom_type == "Polygon" else \
                  [[[list(p) for p in part.exterior.coords]] for part in poly.geoms]
@@ -231,6 +238,7 @@ df_clean1 = remove_non_str_rows(df, 'BOROUGH')
 ward_names = sorted(df_clean1['NAME'].unique())
 borough_name = sorted(df_clean1['BOROUGH'].unique())
 
+year_options = [2025, 2026, 2027]
 # Creating dash app
 app = Dash(__name__)
 app.title = "London Police Dashboard"
@@ -277,11 +285,13 @@ app.layout = html.Div([
                                                'border': '3px solid #2f3e46', 'borderRadius': '5px'}),
             dcc.Dropdown(
                 id='month-selector',
-                options=[{'label': month, 'value': month} for month in [
-                    'January', 'February', 'March', 'April', 'May', 'June',
-                    'July', 'August', 'September', 'October', 'November', 'December'
-                ]],
-                value='January',
+                options = [{'label': 'January', 'value': 1}, {'label': 'February', 'value': 2},
+                           {'label': 'March', 'value': 3}, {'label': 'April', 'value': 4},
+                           {'label': 'May', 'value': 5}, {'label': 'June', 'value': 6},
+                           {'label': 'July', 'value': 7}, {'label': 'August', 'value': 8},
+                           {'label': 'September', 'value': 9}, {'label': 'October', 'value': 10},
+                           {'label': 'November', 'value': 11}, {'label': 'December', 'value': 12}],
+                value=1,
                 clearable=False,
                 style={'width': '200px', 'marginTop': '5px'}
             ),
@@ -391,7 +401,7 @@ app.layout = html.Div([
                         "marginRight": "10px",
                         "border": "1px solid black"
                     }),
-                    html.Span(quantile_labels[q])
+                    html.Span(quantile_labels_legend[q])
                 ], style={"marginBottom": "5px"}) for q in quantile_colors
             ]
         ],
@@ -420,7 +430,12 @@ app.layout = html.Div([
         'display': 'flex',
         'flexDirection': 'row',
         'width': '100%'  
-    })
+    }),
+    html.Div([
+        ####################### LUUK VISUALIZATION #########################################
+        # Change style as you see fit also:
+    ], style = {'width': '100%', 'height': '200px', "border": "2px solid #2f3e46", "borderRadius": "5px",}) 
+
 ], style = {'backgroundColor': '#cad2c5', 'padding': '10px', 'borderTop': '20px solid #2f3e46'})
 
 # Update ward dropdown based on borough selection
@@ -452,11 +467,13 @@ def smart_prefix_search_wards(search_value, selected_borough):
 @app.callback(
     Output("map-layer", "children"),
     Input("submit-button", "n_clicks"),
-    Input("risky-months", "n_clicks"),
-    Input("risky-month-selector", "value"),
+    Input("risky-months", "n_clicks"), # Button
+    Input("risky-month-selector", "value"), # Option selector
+    Input('year-selector', 'value'),
+    Input('month-selector', 'value'),
     prevent_initial_call=True
 )
-def update_map(submit_clicks, risky_clicks, risky_month):
+def update_map(submit_clicks, risky_clicks, risky_month, year, month):
     ctx = callback_context
 
     if not ctx.triggered:
@@ -466,7 +483,7 @@ def update_map(submit_clicks, risky_clicks, risky_month):
 
     if trigger_id == "submit-button":
         # Original behavior: map based on quantile2 (Officers)
-        return [make_layer_quantile2(q) for q in quantile_colors.keys()]
+        return [make_layer_quantile2(q, year, month) for q in quantile_colors.keys()]
 
     elif trigger_id == "risky-months":
         # Behavior based on risky-month-selector
@@ -478,6 +495,7 @@ def update_map(submit_clicks, risky_clicks, risky_month):
         }
         quantile_column = quantile_column_map.get(risky_month, 'quantile_risky')
         return [make_layer_risky_months(quantile_column, q) for q in quantile_colors.keys()]
+    #########
 
     else:
         raise dash.exceptions.PreventUpdate
@@ -498,6 +516,26 @@ def smart_prefix_search_boroughs(search_value):
     matched_boroughs = [name for name in borough_name if word_starts_with(name)]
 
     return [{'label': name, 'value': name} for name in sorted(matched_boroughs)]
+
+@app.callback(
+    Output('month-selector', 'options'),
+    Input('year-selector', 'value')
+)
+def update_month_dropdown(selected_year):
+    if selected_year == 2027:
+        return [
+            {'label': 'January', 'value': 1},
+            {'label': 'February', 'value': 2}
+        ]
+    else:
+        return [
+            {'label': 'January', 'value': 1}, {'label': 'February', 'value': 2},
+            {'label': 'March', 'value': 3}, {'label': 'April', 'value': 4},
+            {'label': 'May', 'value': 5}, {'label': 'June', 'value': 6},
+            {'label': 'July', 'value': 7}, {'label': 'August', 'value': 8},
+            {'label': 'September', 'value': 9}, {'label': 'October', 'value': 10},
+            {'label': 'November', 'value': 11}, {'label': 'December', 'value': 12}
+        ]
 
 if __name__ == '__main__':
     app.run(debug=True)
