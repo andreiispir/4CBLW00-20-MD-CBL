@@ -33,7 +33,7 @@ def ilp_optimisation_model_xgboost(csv_path, year, month):
         raise ValueError(f"No data found for year {year} month {month}")
 
     # Calculate average predictions
-    crime_counts = df.groupby("Ward")['Predicted'].mean().to_dict()
+    crime_counts = df_filtered.groupby("Ward")['Predicted'].mean().to_dict()
     wards = list(crime_counts.keys())
 
     # Calculate total crimes and crime proportions
@@ -100,9 +100,23 @@ current_dir = os.getcwd()
 csv_filename = 'ward_level_xgb_forecasts.csv'
 csv_path = os.path.join(current_dir, csv_filename)
 
-optimisation = ilp_optimisation_model_xgboost(csv_path, year=2023, month=10)
+optimisation = ilp_optimisation_model_xgboost(csv_path, year=2025, month=10)
 
 print(optimisation)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # # Get optimization results
