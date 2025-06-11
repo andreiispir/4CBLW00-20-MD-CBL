@@ -9,7 +9,7 @@ from scipy import stats
 
 global_allocation = {}
 
-def ilp_optimisation_model_xgboost(csv_path):
+def ilp_optimisation_model_xgboost(csv_path, year, month):
     """
     Optimisation model for allocating police officers to wards based on burglary forecasts.
     
@@ -21,6 +21,16 @@ def ilp_optimisation_model_xgboost(csv_path):
     """
     global global_allocation
     df = pd.read_csv(csv_path)
+
+    # Convert ds column to datetime if it's not already
+    df['Date'] = pd.to_datetime(df['Date'])
+    
+    # Filter data for specific year and month
+    mask = (df['Date'].dt.year == year) & (df['Date'].dt.month == month)
+    df_filtered = df[mask]
+    
+    if df_filtered.empty:
+        raise ValueError(f"No data found for year {year} month {month}")
 
     # Calculate average predictions
     crime_counts = df.groupby("Ward")['Predicted'].mean().to_dict()
@@ -79,100 +89,49 @@ def ilp_optimisation_model_xgboost(csv_path):
         print(f"Optimization failed with status: {pulp.LpStatus[prob.status]}")
         exit()
 
-    # Results
-    global_allocation = {w: int(officers[w].varValue) for w in wards}
-    return global_allocation
-    # print(allocation)
+    allocation_dict = {w: int(officers[w].varValue) for w in wards}
+    allocation_df = pd.DataFrame.from_dict(allocation_dict, orient='index', columns=['Officers'])
+    allocation_df.index.name = 'Ward'
+    allocation_df.reset_index(inplace=True)
+    return allocation_df
 
 
 current_dir = os.getcwd()
 csv_filename = 'ward_level_xgb_forecasts.csv'
 csv_path = os.path.join(current_dir, csv_filename)
 
-optimisation = ilp_optimisation_model_xgboost(csv_path)
+optimisation = ilp_optimisation_model_xgboost(csv_path, year=2023, month=10)
+
+print(optimisation)
 
 
+# # Get optimization results
+# optimisation_df = ilp_optimisation_model_xgboost(csv_path, year=2023, month=10)
 
+# # Save directly to CSV
+# optimisation_df.to_csv("officer_allocation_forecast.csv", index=False)
 
+# # Create visualization
+# wards_gdf = gpd.read_file("London-wards-2018/London-wards-2018_ESRI/London_Ward.shp")
 
+# # Merge allocation with geographic data (optimisation_df is already a DataFrame)
+# merged_gdf = wards_gdf.merge(optimisation_df, on='Ward')
 
+# # Plot the results
+# fig, ax = plt.subplots(1, 1, figsize=(12, 12))
+# merged_gdf.plot(column='Officers', cmap='Blues', linewidth=0.8, ax=ax, edgecolor='0.8', legend=True)
+# ax.set_title('Optimized Police Officer Allocation per London Ward - XGBoost', fontsize=15)
+# ax.axis('off')
+# plt.show()
 
-# Create visualization
-wards_gdf = gpd.read_file("London-wards-2018/London-wards-2018_ESRI/London_Ward.shp")
+# # Save the plot
+# fig.savefig("officer_allocation_forecast_map - XGBoost.png", dpi=300)
 
-# Create allocation DataFrame
-allocation_df = pd.DataFrame.from_dict(optimisation, orient='index', columns=['Officers'])
-allocation_df.to_csv("officer_allocation_forecast.csv")
-allocation_df.index.name = 'NAME'
-allocation_df.reset_index(inplace=True)
-
-# Merge allocation with geographic data
-merged_gdf = wards_gdf.merge(allocation_df, on='NAME')
-
-# Plot the results
-fig, ax = plt.subplots(1, 1, figsize=(12, 12))
-merged_gdf.plot(column='Officers', cmap='Blues', linewidth=0.8, ax=ax, edgecolor='0.8', legend=True)
-ax.set_title('Optimized Police Officer Allocation per London Ward - XGBoost', fontsize=15)
-ax.axis('off')
-plt.show()
-
-# Save the plot
-fig.savefig("officer_allocation_forecast_map - XGBoost.png", dpi=300)
-
-# Print some statistics
-print("\nAllocation Statistics:")
-print(f"Total officers allocated: {sum(optimisation.values())}")
-print("\nTop 10 wards by officer allocation:")
-for ward, officers in sorted(optimisation.items(), key=lambda x: x[1], reverse=True)[:10]:
-    print(f"{ward}: {officers} officers")
-
-
-
-
-
-
-
-
-
-df = pd.read_csv(csv_path)
-
-    # Calculate average predictions
-crime_counts = df.groupby("Ward")['Predicted'].mean().to_dict()
-# Creating a DataFrame for analysis
-analysis_df = pd.DataFrame({'Ward': list(crime_counts.keys()),'Crimes': list(crime_counts.values()),'Officers': [global_allocation[ward] for ward in crime_counts.keys()]})
-
-# Calculateing statistics
-analysis_df['Crime_Rate'] = analysis_df['Crimes'] / analysis_df['Crimes'].sum()
-analysis_df['Officer_Rate'] = analysis_df['Officers'] / analysis_df['Officers'].sum()
-r2 = r2_score(analysis_df['Crime_Rate'], analysis_df['Officer_Rate'])
-rmse = np.sqrt(mean_squared_error(analysis_df['Crime_Rate'], analysis_df['Officer_Rate']))
-correlation, p_value = stats.pearsonr(analysis_df['Crime_Rate'], analysis_df['Officer_Rate'])
-
-# Printing the results 
-print("\nModel Performance Metrics:")
-print(f"R² Score: {r2:.4f}")
-print(f"RMSE: {rmse:.4f}")
-print(f"Correlation coefficient: {correlation:.4f}")
-print(f"P-value: {p_value:.4f}")
-
-# Calculateing distribution statistics
-print("\nDistribution Statistics:")
-print("Officers per crime:")
-print(analysis_df['Officers'].sum() / analysis_df['Crimes'].sum())
-print("\nSummary statistics for officer allocation:")
-print(analysis_df['Officers'].describe())
-
-# Create a scatter plot of crime rate vs officer rate
-plt.figure(figsize=(10, 6))
-plt.scatter(analysis_df['Crime_Rate'], analysis_df['Officer_Rate'], alpha=0.5)
-plt.plot([0, max(analysis_df['Crime_Rate'])], [0, max(analysis_df['Crime_Rate'])], 'r--', label='Perfect correlation')
-plt.xlabel('Crime Rate')
-plt.ylabel('Officer Rate')
-plt.title('Crime Rate vs Officer Rate')
-plt.legend()
-plt.grid(True)
-plt.savefig("correlation_plot.png", dpi=300)
-plt.close()
+# # Print statistics using DataFrame
+# print("\nAllocation Statistics:")
+# print(f"Total officers allocated: {optimisation_df['Officers'].sum()}")
+# print("\nTop 10 wards by officer allocation:")
+# print(optimisation_df.nlargest(10, 'Officers')[['Ward', 'Officers']].to_string(index=False))
 
 
 
@@ -183,37 +142,86 @@ plt.close()
 
 
 
-# Calculating accuracy
-def calculate_accuracy_metrics(actual, predicted, tolerances=[0.05, 0.1, 0.2]):
-    mape = np.mean(np.abs((actual - predicted) / actual)) * 100
-    accuracy_scores = {}
-    for tolerance in tolerances:
-        within_tolerance = np.sum(np.abs((actual - predicted) / actual) <= tolerance)
-        accuracy_scores[f"Accuracy within {tolerance*100}%"] = within_tolerance / len(actual) * 100
+# df = pd.read_csv(csv_path)
+
+#     # Calculate average predictions
+# crime_counts = df.groupby("Ward")['Predicted'].mean().to_dict()
+# # Creating a DataFrame for analysis
+# analysis_df = pd.DataFrame({'Ward': list(crime_counts.keys()),'Crimes': list(crime_counts.values()),'Officers': [global_allocation[ward] for ward in crime_counts.keys()]})
+
+# # Calculateing statistics
+# analysis_df['Crime_Rate'] = analysis_df['Crimes'] / analysis_df['Crimes'].sum()
+# analysis_df['Officer_Rate'] = analysis_df['Officers'] / analysis_df['Officers'].sum()
+# r2 = r2_score(analysis_df['Crime_Rate'], analysis_df['Officer_Rate'])
+# rmse = np.sqrt(mean_squared_error(analysis_df['Crime_Rate'], analysis_df['Officer_Rate']))
+# correlation, p_value = stats.pearsonr(analysis_df['Crime_Rate'], analysis_df['Officer_Rate'])
+
+# # Printing the results 
+# print("\nModel Performance Metrics:")
+# print(f"R² Score: {r2:.4f}")
+# print(f"RMSE: {rmse:.4f}")
+# print(f"Correlation coefficient: {correlation:.4f}")
+# print(f"P-value: {p_value:.4f}")
+
+# # Calculateing distribution statistics
+# print("\nDistribution Statistics:")
+# print("Officers per crime:")
+# print(analysis_df['Officers'].sum() / analysis_df['Crimes'].sum())
+# print("\nSummary statistics for officer allocation:")
+# print(analysis_df['Officers'].describe())
+
+# # Create a scatter plot of crime rate vs officer rate
+# plt.figure(figsize=(10, 6))
+# plt.scatter(analysis_df['Crime_Rate'], analysis_df['Officer_Rate'], alpha=0.5)
+# plt.plot([0, max(analysis_df['Crime_Rate'])], [0, max(analysis_df['Crime_Rate'])], 'r--', label='Perfect correlation')
+# plt.xlabel('Crime Rate')
+# plt.ylabel('Officer Rate')
+# plt.title('Crime Rate vs Officer Rate')
+# plt.legend()
+# plt.grid(True)
+# plt.savefig("correlation_plot.png", dpi=300)
+# plt.close()
+
+
+
+
+
+
+
+
+
+
+# # Calculating accuracy
+# def calculate_accuracy_metrics(actual, predicted, tolerances=[0.05, 0.1, 0.2]):
+#     mape = np.mean(np.abs((actual - predicted) / actual)) * 100
+#     accuracy_scores = {}
+#     for tolerance in tolerances:
+#         within_tolerance = np.sum(np.abs((actual - predicted) / actual) <= tolerance)
+#         accuracy_scores[f"Accuracy within {tolerance*100}%"] = within_tolerance / len(actual) * 100
     
-    return mape, accuracy_scores
+#     return mape, accuracy_scores
 
-# Calculate accuracy metrics
-mape, accuracy_scores = calculate_accuracy_metrics(analysis_df['Crime_Rate'], analysis_df['Officer_Rate'])
+# # Calculate accuracy metrics
+# mape, accuracy_scores = calculate_accuracy_metrics(analysis_df['Crime_Rate'], analysis_df['Officer_Rate'])
 
-# Printing accuracy
-print("\nAccuracy Metrics:")
-print(f"Mean Absolute Percentage Error (MAPE): {mape:.2f}%")
-for threshold, score in accuracy_scores.items():
-    print(f"{threshold}: {score:.2f}%")
+# # Printing accuracy
+# print("\nAccuracy Metrics:")
+# print(f"Mean Absolute Percentage Error (MAPE): {mape:.2f}%")
+# for threshold, score in accuracy_scores.items():
+#     print(f"{threshold}: {score:.2f}%")
 
-# Calculating relative allocation accuracy
-over_allocated = len(analysis_df[analysis_df['Officer_Rate'] > analysis_df['Crime_Rate']])
-under_allocated = len(analysis_df[analysis_df['Officer_Rate'] < analysis_df['Crime_Rate']])
-perfectly_allocated = len(analysis_df[analysis_df['Officer_Rate'] == analysis_df['Crime_Rate']])
+# # Calculating relative allocation accuracy
+# over_allocated = len(analysis_df[analysis_df['Officer_Rate'] > analysis_df['Crime_Rate']])
+# under_allocated = len(analysis_df[analysis_df['Officer_Rate'] < analysis_df['Crime_Rate']])
+# perfectly_allocated = len(analysis_df[analysis_df['Officer_Rate'] == analysis_df['Crime_Rate']])
 
-print("\nAllocation Analysis:")
-print(f"Over-allocated wards: {over_allocated} ({over_allocated/len(analysis_df)*100:.1f}%)")
-print(f"Under-allocated wards: {under_allocated} ({under_allocated/len(analysis_df)*100:.1f}%)")
-print(f"Perfectly allocated wards: {perfectly_allocated} ({perfectly_allocated/len(analysis_df)*100:.1f}%)")
+# print("\nAllocation Analysis:")
+# print(f"Over-allocated wards: {over_allocated} ({over_allocated/len(analysis_df)*100:.1f}%)")
+# print(f"Under-allocated wards: {under_allocated} ({under_allocated/len(analysis_df)*100:.1f}%)")
+# print(f"Perfectly allocated wards: {perfectly_allocated} ({perfectly_allocated/len(analysis_df)*100:.1f}%)")
 
 
-pd.set_option('display.max_rows', None)
-print(analysis_df)
+# pd.set_option('display.max_rows', None)
+# print(analysis_df)
 
 
