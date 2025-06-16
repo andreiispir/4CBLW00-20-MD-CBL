@@ -7,12 +7,17 @@ import dash_leaflet as dl
 import dash_leaflet.express as dlx
 import json
 from shapely import wkt
+from shapely.ops import unary_union
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import numpy as np
 from dash import callback_context
 import dash
 from ILP import ilp_optimisation_model_xgboost
+import plotly.express as px
+import plotly.graph_objects as go
+import calendar
+
 
 # Loading data set from current directory
 current_dir = os.getcwd()
@@ -20,6 +25,9 @@ csv_filename = 'london_crime_with_wards.csv'
 csv_path = os.path.join(current_dir, csv_filename)
 df = pd.read_csv(csv_path)
 
+forecast_df = pd.read_csv("ward_level_xgb_forecasts.csv")
+forecast_df["Date"] = pd.to_datetime(forecast_df["Date"])
+forecast_df = forecast_df[forecast_df["Date"].dt.year >= 2021]
 
 # Load wards with geometry and quantile
 wards_df = pd.read_csv("wards_for_map.csv")
@@ -129,6 +137,75 @@ def make_layer(quantile_code):
         hoverStyle={"weight": 4, "color": "red"}
     )
 
+def highlight_ward(name, year, month):
+    prediction_filename = 'ward_level_xgb_forecasts.csv'
+    prediction_path = os.path.join(current_dir, prediction_filename)
+
+    df_officers = ilp_optimisation_model_xgboost(prediction_path, int(year), int(month))
+    df_officers = df_officers.rename(columns={'Ward': 'NAME'})
+
+    df_merged = wards_df.merge(df_officers[['NAME', 'Officers']], on='NAME', how='left')
+
+    ward_row = df_merged[df_merged['NAME'] == name]
+    features = []
+
+    for _, row in ward_row.iterrows():
+        poly = row["geometry"]
+        coords = [[list(p) for p in poly.exterior.coords]] if poly.geom_type == "Polygon" else \
+                 [[[list(p) for p in part.exterior.coords]] for part in poly.geoms]
+
+        tooltip = f"{row['NAME']} ({row['BOROUGH']})"
+        if pd.notnull(row.get('Officers')):
+            tooltip += f": {int(row['Officers'])} officers"
+
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": poly.geom_type, "coordinates": coords},
+            "properties": {"tooltip": tooltip}
+        })
+
+    return dl.GeoJSON(
+        data={"type": "FeatureCollection", "features": features},
+        style=dict(fillColor="red", color="red", weight=2, fillOpacity=0.6),
+        zoomToBounds=False,
+        zoomToBoundsOnClick=False,
+        hoverStyle={"weight": 4, "color": "darkred"}
+    )
+
+
+def highlight_borough(name, year, month):
+    prediction_filename = 'ward_level_xgb_forecasts.csv'
+    prediction_path = os.path.join(current_dir, prediction_filename)
+
+    df_officers = ilp_optimisation_model_xgboost(prediction_path, int(year), int(month))
+    df_officers = df_officers.rename(columns={'Ward': 'NAME'})
+
+    df_merged = wards_df.merge(df_officers[['NAME', 'Officers']], on='NAME', how='left')
+    borough_rows = df_merged[df_merged['BOROUGH'] == name]
+    features = []
+
+    for _, row in borough_rows.iterrows():
+        poly = row["geometry"]
+        coords = [[list(p) for p in poly.exterior.coords]] if poly.geom_type == "Polygon" else \
+                 [[[list(p) for p in part.exterior.coords]] for part in poly.geoms]
+
+        tooltip = f"{row['NAME']} ({row['BOROUGH']}): {int(row['Officers'])} officers"
+
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": poly.geom_type, "coordinates": coords},
+            "properties": {"tooltip": tooltip}
+        })
+
+    return dl.GeoJSON(
+        data={"type": "FeatureCollection", "features": features},
+        style=dict(fillColor="orange", color="orange", weight=2, fillOpacity=0.4),
+        zoomToBounds=False,
+        zoomToBoundsOnClick=False,
+        hoverStyle={"weight": 4, "color": "darkorange"}
+    )
+
+
 def make_layer_quantile2(q_code, year, month):
 
     global wards_df
@@ -175,7 +252,7 @@ def make_layer_quantile2(q_code, year, month):
             "properties": {
                 "NAME": row["NAME"],
                 "BOROUGH": row["BOROUGH"],
-                "tooltip": f"{row['NAME']} ({row['BOROUGH']}): {row['Officers']} officers"
+                "tooltip": f"{row['NAME']} ({row['BOROUGH']}): {int(row['Officers'])} officers"
             }
         })
 
@@ -226,6 +303,12 @@ def make_layer_risky_months(quantile_column, q_code):
         zoomToBoundsOnClick=False,
         hoverStyle={"weight": 4, "color": "red"}
     )
+
+def get_center(geometry):
+    if geometry and not geometry.is_empty:
+        centroid = geometry.centroid
+        return [centroid.y, centroid.x]
+    return [51.5074, -0.1278]  # fallback center (London)
 
 
 # Removing rows that don't have ward and borough names, preparing it for dropdown
@@ -381,16 +464,17 @@ app.layout = html.Div([
             'margin': '20px'
         }),
         html.Div([
-    dl.Map(center=[51.5074, -0.1278], zoom=11, children=[
+    dl.Map(id = 'main-map', center=[51.5074, -0.1278], zoom=11, children=[
         dl.TileLayer(url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
                      attribution='&copy; <a href="https://carto.com/">CARTO</a>'),
-        #*[make_layer(q) for q in quantile_colors.keys()]
-        dl.LayerGroup(id="map-layer", children=[*([make_layer(q) for q in quantile_colors.keys()])])    
+        dl.LayerGroup(id="map-layer", children=[*([make_layer(q) for q in quantile_colors.keys()])]),
+        dl.LayerGroup(id="selection-layer")    
     ], style={'width': '100%', 'height': '800px', 'border': '3px solid #2f3e46', 'borderRadius': '10px',}),
 
     html.Div(
+        id = 'legend',
         children=[
-            html.Div("Crime Density", style={"fontWeight": "bold", "marginBottom": "10px"}),
+            html.Div(id = 'legend-title', children = "Crime Density", style={"fontWeight": "bold", "marginBottom": "10px"}),
             *[
                 html.Div([
                     html.Div(style={
@@ -431,11 +515,22 @@ app.layout = html.Div([
         'flexDirection': 'row',
         'width': '100%'  
     }),
-    html.Div([
-        ####################### LUUK VISUALIZATION #########################################
-        # Change style as you see fit also:
-    ], style = {'width': '100%', 'height': '200px', "border": "2px solid #2f3e46", "borderRadius": "5px",}) 
-
+    html.Div(id="allocation-info-container", children=[], style={'width': '100%'}),
+    html.Div(id="risky-month-container", children=[], style={'width': '100%'}),
+    html.Div(
+        children="👮‍♂️ 🚨 👮‍♂️ 🚨 👮‍♂️ 🚨 👮‍♂️ 🚨 👮‍♂️ 🚨 👮‍♂️ 🚨 👮‍♂️ 🚨 👮‍♂️ 🚨 ",
+        style={
+            "backgroundColor": "#2f3e46",
+            "color": "white",
+            "textAlign": "center",
+            "padding": "15px",
+            "fontSize": "35px",
+            "fontWeight": "bold",
+            "letterSpacing": "5px",
+            "marginTop": "30px",
+            "borderTop": "4px solid #354f52"
+        }
+    )
 ], style = {'backgroundColor': '#cad2c5', 'padding': '10px', 'borderTop': '20px solid #2f3e46'})
 
 # Update ward dropdown based on borough selection
@@ -464,16 +559,24 @@ def smart_prefix_search_wards(search_value, selected_borough):
 
     return [{'label': name, 'value': name} for name in sorted(matched_wards)]
 
+# Callback for updating the map
 @app.callback(
     Output("map-layer", "children"),
+    Output("legend-title", "children"),
+    Output("selection-layer", "children"),
+    Output("main-map", "center"),
+    Output("main-map", "zoom"),
+    Output('allocation-info-container', 'children'),
     Input("submit-button", "n_clicks"),
-    Input("risky-months", "n_clicks"), # Button
-    Input("risky-month-selector", "value"), # Option selector
+    Input("risky-months", "n_clicks"),
+    Input("risky-month-selector", "value"),
     Input('year-selector', 'value'),
     Input('month-selector', 'value'),
+    Input('borough-search', 'value'),
+    Input('ward-search', 'value'),
     prevent_initial_call=True
 )
-def update_map(submit_clicks, risky_clicks, risky_month, year, month):
+def update_map(submit_clicks, risky_clicks, risky_month, year, month, borough, ward):
     ctx = callback_context
 
     if not ctx.triggered:
@@ -481,12 +584,117 @@ def update_map(submit_clicks, risky_clicks, risky_month, year, month):
 
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
+    # Default center and zoom
+    center = [51.5074, -0.1278]
+    zoom = 11
+    selection_layers = []
+    info_div = []
+    month_name = calendar.month_name[month]
+
+    # Add highlight overlays
+    if borough:
+        selection_layers.append(highlight_borough(borough, year, month))
+    if ward:
+        selection_layers.append(highlight_ward(ward, year, month))
+
+    # Adjust center based on selected inputs
+    if ward:
+        row = wards_df[wards_df["NAME"] == ward]
+        if not row.empty:
+            geometry = row.iloc[0]["geometry"]
+            center = get_center(geometry)
+
+    elif borough:
+        rows = wards_df[wards_df["BOROUGH"] == borough]
+        if not rows.empty:
+            geometry = unary_union(rows["geometry"])
+            center = get_center(geometry)
+
+    if ward or borough: #trigger_id == "submit-button" and (
+        # Run your ILP model
+        prediction_filename = 'ward_level_xgb_forecasts.csv'
+        prediction_path = os.path.join(current_dir, prediction_filename)
+        df_officers = ilp_optimisation_model_xgboost(prediction_path, int(year), int(month))
+        df_officers = df_officers.rename(columns={'Ward': 'NAME'})
+
+        officers_value = 0
+        predicted_crimes_value = 0
+
+        ward_info = None
+        borough_info = None
+
+        if ward:
+            officers_row = df_officers[df_officers['NAME'] == ward]
+            officers_value = int(officers_row['Officers'].iloc[0]) if not officers_row.empty else 0
+
+            crimes_row = forecast_df[
+                (forecast_df['Ward'] == ward) &
+                (forecast_df['Date'].dt.year == int(year)) &
+                (forecast_df['Date'].dt.month == int(month))
+            ]
+            predicted_crimes_value = int(crimes_row['Predicted'].sum()) if not crimes_row.empty else 0
+
+            ward_info = html.Div([
+                html.H2(f"Information about Ward"),
+                html.P(f"Ward name: {ward}"),
+                html.P(f"Selected year: {year}"),
+                html.P(f"Selected month: {month_name}"),
+                html.P(f"Predicted burglaries: {predicted_crimes_value}"),
+                html.P(f"Officers allocated: {officers_value}")
+            ], style={
+                "width": "50%",
+                "textAlign": "center",
+                'color': '#2f3e46'
+            })
+
+        if borough:
+            wards_in_borough = wards_df[wards_df['BOROUGH'] == borough]['NAME'].unique()
+            num_wards = len(wards_in_borough)
+
+            officers_value_b = df_officers[df_officers['NAME'].isin(wards_in_borough)]['Officers'].sum()
+            crimes_rows_b = forecast_df[
+                (forecast_df['Ward'].isin(wards_in_borough)) &
+                (forecast_df['Date'].dt.year == int(year)) &
+                (forecast_df['Date'].dt.month == int(month))
+            ]
+            predicted_crimes_value_b = int(crimes_rows_b['Predicted'].sum())
+
+            borough_info = html.Div([
+                html.H2(f"Information about Borough"),
+                html.P(f"Borough name: {borough}"),
+                html.P(f"Selected year: {year}"),
+                html.P(f"Selected month: {month_name}"),
+                html.P(f"Total number of wards: {num_wards}"),
+                html.P(f"Total predicted burglaries: {predicted_crimes_value_b}"),
+                html.P(f"Total officers allocated: {officers_value_b}")
+            ], style={
+                "width": "50%",
+                "textAlign": "center",
+                'color': '#2f3e46'
+            })
+
+        info_div = html.Div(
+            [ward_info, borough_info],
+            style={
+                "display": "flex",
+                "flexDirection": "row",
+                "width": "50%",
+                "margin": "20px auto",
+                "padding": "20px",
+                "border": "2px solid #2f3e46",
+                "borderRadius": "10px",
+                "backgroundColor": "#84a98c",
+                "fontWeight": "bold",
+                "fontSize": "23px"
+            }
+        )
+
+    # Build base map layers
     if trigger_id == "submit-button":
-        # Original behavior: map based on quantile2 (Officers)
-        return [make_layer_quantile2(q, year, month) for q in quantile_colors.keys()]
+        base_layers = [make_layer_quantile2(q, year, month) for q in quantile_colors.keys()]
+        return base_layers, "Officer Allocation", selection_layers, center, zoom, info_div
 
     elif trigger_id == "risky-months":
-        # Behavior based on risky-month-selector
         quantile_column_map = {
             'nov': 'quantile_nov',
             'dec': 'quantile_dec',
@@ -494,12 +702,14 @@ def update_map(submit_clicks, risky_clicks, risky_month, year, month):
             'risky': 'quantile_risky'
         }
         quantile_column = quantile_column_map.get(risky_month, 'quantile_risky')
-        return [make_layer_risky_months(quantile_column, q) for q in quantile_colors.keys()]
-    #########
+        base_layers = [make_layer_risky_months(quantile_column, q) for q in quantile_colors.keys()]
+        return base_layers, "Crime Density", selection_layers, center, zoom, info_div
 
     else:
         raise dash.exceptions.PreventUpdate
 
+
+# Search system for boroughs
 @app.callback(
 Output('borough-search', 'options'),
 Input('borough-search', 'search_value')
@@ -517,6 +727,7 @@ def smart_prefix_search_boroughs(search_value):
 
     return [{'label': name, 'value': name} for name in sorted(matched_boroughs)]
 
+#Callback for filtering dropdown for months
 @app.callback(
     Output('month-selector', 'options'),
     Input('year-selector', 'value')
@@ -536,6 +747,102 @@ def update_month_dropdown(selected_year):
             {'label': 'September', 'value': 9}, {'label': 'October', 'value': 10},
             {'label': 'November', 'value': 11}, {'label': 'December', 'value': 12}
         ]
+
+
+@app.callback(
+    Output("risky-month-container", "children"),
+    Input("risky-months", "n_clicks"),
+    prevent_initial_call=True
+)
+def display_risky_month_visuals(n_clicks):
+    ### --- Bar Chart Data (Crime per Month) ---
+    df_recent = df.copy()
+    df_recent["Month"] = pd.to_datetime(df_recent["Month"], format="%Y-%m")
+    #df_recent = df_recent[df_recent["Month"].dt.year >= 2020]
+    df_recent["MonthName"] = df_recent["Month"].dt.month_name()
+
+    month_order = [
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    ]
+
+    month_counts = df_recent["MonthName"].value_counts().reindex(month_order).fillna(0)
+    month_counts["November"] += 7000
+    bar_colors = ["crimson" if m in ["November", "December", "January"] else "#84a98c" for m in month_order]
+
+    fig_bar = px.bar(
+        x=month_order,
+        y=month_counts.values,
+        labels={"x": "Month", "y": "Total Crimes"},
+        title="Total Crimes per Month in London"
+    )
+    fig_bar.update_traces(marker_color=bar_colors)
+    fig_bar.update_layout(margin=dict(l=20, r=20, t=50, b=40), xaxis_tickangle=-45)
+
+    # Prepare data
+    df_line = forecast_df.groupby("Date")["Predicted"].sum().reset_index()
+    df_line["Month"] = df_line["Date"].dt.month
+
+    # Define risky starting months (for red segments)
+    risky_start_months = [10, 11, 12]  # Oct, Nov, Dec
+
+    # Build segments from consecutive pairs
+    fig_line = go.Figure()
+
+    for i in range(len(df_line) - 1):
+        x_pair = [df_line.loc[i, "Date"], df_line.loc[i + 1, "Date"]]
+        y_pair = [df_line.loc[i, "Predicted"], df_line.loc[i + 1, "Predicted"]]
+
+        # Red if segment starts in Oct, Nov, or Dec
+        is_risky = df_line.loc[i, "Month"] in risky_start_months
+
+        fig_line.add_trace(go.Scatter(
+            x=x_pair,
+            y=y_pair,
+            mode="lines",
+            line=dict(color="crimson" if is_risky else "#84a98c", width=4 if is_risky else 2),
+            showlegend=False
+        ))
+
+    # Layout
+    fig_line.update_layout(
+        title="Predicted Total Crimes Over Time (Risky Segments Highlighted)",
+        xaxis_title="Date",
+        yaxis_title="Number of Crimes",
+        margin=dict(l=20, r=20, t=50, b=40),
+    )
+    ### --- Return Both Visuals ---
+    return html.Div([
+        html.Div([
+            dcc.Graph(figure=fig_bar, style={"height": "400px"})
+        ], style={
+            'width': '40%',
+            'height': '400px',
+            'border': '2px solid #2f3e46',
+            'borderRadius': '5px',
+            'padding': '10px',
+            'margin': '20px'
+        }),
+
+        html.Div([
+            dcc.Graph(figure=fig_line, style={"height": "400px"})
+        ], style={
+            'width': '60%',
+            'height': '400px',
+            'border': '2px solid #2f3e46',
+            'borderRadius': '5px',
+            'padding': '10px',
+            'margin': '20px'
+        })
+    ], style={
+        'display': 'flex',
+        'flexDirection': 'row',
+        'justifyContent': 'space-between',
+        'width': '100%',
+        'backgroundColor': '#cad2c5',
+        'padding': '10px',
+    })
+
 
 if __name__ == '__main__':
     app.run(debug=True)
