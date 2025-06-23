@@ -26,3 +26,5 @@ Each branch corresponds to a major component of the project:
 
 ```bash
 git clone https://github.com/andreiispir/4CBLW00-20-MD-CBL.git
+```
+### 2. In the main branch run dashboard.py
